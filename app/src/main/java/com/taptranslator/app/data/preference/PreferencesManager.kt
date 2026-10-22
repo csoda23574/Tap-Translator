@@ -40,8 +40,16 @@ class PreferencesManager(context: Context) {
         }
 
     var selectedModel: String
-        get() = prefs.getString(KEY_SELECTED_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL
-        set(value) = prefs.edit().putString(KEY_SELECTED_MODEL, value).apply()
+        get() {
+            val saved = prefs.getString(KEY_SELECTED_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL
+            // Automatically migrate deprecated model
+            return if (saved == "gemini-2.0-flash") {
+                DEFAULT_MODEL.also { selectedModel = it }
+            } else {
+                saved
+            }
+        }
+        set(value) = prefs.edit().putString(KEY_SELECTED_MODEL, value.trim()).apply()
 
     var sourceLanguage: String
         get() = prefs.getString(KEY_SOURCE_LANG, "ja") ?: "ja"
@@ -82,8 +90,9 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_SERVICE_RUNNING, value).apply()
 
     companion object {
-        const val DEFAULT_MODEL = "gemini-1.5-flash"
-        const val ALTERNATIVE_MODEL = "gemini-2.0-flash"
+        const val DEFAULT_MODEL = "gemini-3.8-flash"
+        const val MODEL_15_FLASH = "gemini-1.5-flash"
+        const val MODEL_38_PRO = "gemini-3.8-pro"
 
         private const val KEY_API_KEY = "key_gemini_api_key"
         private const val KEY_SELECTED_MODEL = "key_selected_model"

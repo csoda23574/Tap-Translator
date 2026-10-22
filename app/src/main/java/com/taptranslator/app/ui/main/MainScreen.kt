@@ -351,31 +351,79 @@ fun MainScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("AI 모델 선택 (Gemini Flash)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("AI 모델 선택 (Gemini)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    val models = listOf(
-                        "gemini-1.5-flash" to "Gemini 1.5 Flash (초고속 / 안정적 추천)",
-                        "gemini-2.0-flash" to "Gemini 2.0 Flash (최신 모델)"
+                    val presetModels = listOf(
+                        "gemini-3.8-flash" to "Gemini 3.8 Flash (최신 Google 권장 / 초고속)",
+                        "gemini-1.5-flash" to "Gemini 1.5 Flash (안정적 구버전)",
+                        "gemini-3.8-pro" to "Gemini 3.8 Pro (최고 퀄리티 / 문맥 이해)"
                     )
 
-                    models.forEach { (modelId, desc) ->
+                    var isCustom by remember(uiState.selectedModel) {
+                        mutableStateOf(presetModels.none { it.first == uiState.selectedModel })
+                    }
+                    var customModelInput by remember(uiState.selectedModel) {
+                        mutableStateOf(if (isCustom) uiState.selectedModel else "")
+                    }
+
+                    presetModels.forEach { (modelId, desc) ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { viewModel.updateSelectedModel(modelId) }
+                                .clickable {
+                                    isCustom = false
+                                    viewModel.updateSelectedModel(modelId)
+                                }
                                 .padding(vertical = 4.dp)
                         ) {
                             RadioButton(
-                                selected = uiState.selectedModel == modelId,
-                                onClick = { viewModel.updateSelectedModel(modelId) }
+                                selected = !isCustom && uiState.selectedModel == modelId,
+                                onClick = {
+                                    isCustom = false
+                                    viewModel.updateSelectedModel(modelId)
+                                }
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = desc, fontSize = 13.sp)
                         }
+                    }
+
+                    // Custom model ID option
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { isCustom = true }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        RadioButton(
+                            selected = isCustom,
+                            onClick = { isCustom = true }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "직접 모델명 입력 (Custom Model ID)", fontSize = 13.sp)
+                    }
+
+                    if (isCustom) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = customModelInput,
+                            onValueChange = {
+                                customModelInput = it
+                                if (it.isNotBlank()) {
+                                    viewModel.updateSelectedModel(it.trim())
+                                }
+                            },
+                            label = { Text("모델 ID 직접 입력") },
+                            placeholder = { Text("예: gemini-3.8-flash, gemini-2.5-flash 등") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                        )
                     }
                 }
             }
