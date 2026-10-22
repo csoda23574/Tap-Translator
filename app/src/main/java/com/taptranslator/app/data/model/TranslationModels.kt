@@ -20,10 +20,11 @@ data class LanguageOption(
 ) {
     companion object {
         val SUPPORTED_SOURCE = listOf(
+            LanguageOption("zh", "중국어 (Chinese)", ScriptType.CHINESE),
             LanguageOption("ja", "일본어 (Japanese)", ScriptType.JAPANESE),
             LanguageOption("en", "영어 (English)", ScriptType.LATIN),
-            LanguageOption("zh", "중국어 (Chinese)", ScriptType.CHINESE),
-            LanguageOption("ko", "한국어 (Korean)", ScriptType.KOREAN)
+            LanguageOption("ko", "한국어 (Korean)", ScriptType.KOREAN),
+            LanguageOption("auto", "자동 감지 (모든 언어)", ScriptType.LATIN)
         )
 
         val SUPPORTED_TARGET = listOf(

@@ -32,6 +32,7 @@ import com.taptranslator.app.ui.overlay.ExitConfirmDialogView
 import com.taptranslator.app.ui.overlay.FloatingButtonView
 import com.taptranslator.app.ui.overlay.ResultOverlayView
 import com.taptranslator.app.util.AppLogger
+import com.taptranslator.app.util.LanguageFilter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -246,16 +247,27 @@ class FloatingOverlayService : Service() {
                     ?: ScriptType.LATIN
 
                 AppLogger.i(TAG, "Starting OCR processing (preferredScript=$preferredScript, sourceLang=$sourceLang)...")
-                val recognizedBlocks = withContext(Dispatchers.Default) {
+                val rawBlocks = withContext(Dispatchers.Default) {
                     ocrEngine.recognizeText(bitmap, preferredScript)
                 }
 
-                if (recognizedBlocks.isEmpty()) {
+                if (rawBlocks.isEmpty()) {
                     AppLogger.w(TAG, "OCR found 0 text blocks on the captured screen")
                     Toast.makeText(this@FloatingOverlayService, "화면에서 인식된 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
-                AppLogger.i(TAG, "OCR extracted ${recognizedBlocks.size} blocks successfully")
+                AppLogger.i(TAG, "Raw OCR extracted ${rawBlocks.size} blocks")
+
+                // 2-1. Filter strictly by selected source language and merge multi-line paragraphs
+                val recognizedBlocks = LanguageFilter.filterAndMergeBlocks(rawBlocks, sourceLang)
+
+                if (recognizedBlocks.isEmpty()) {
+                    AppLogger.w(TAG, "No blocks matched selected source language ($sourceLang) out of ${rawBlocks.size} OCR blocks")
+                    val langName = LanguageOption.SUPPORTED_SOURCE.firstOrNull { it.code == sourceLang }?.displayName?.split(" ")?.first() ?: sourceLang
+                    Toast.makeText(this@FloatingOverlayService, "화면에서 $langName 텍스트를 찾지 못했습니다.", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                AppLogger.i(TAG, "Language filter kept ${recognizedBlocks.size} target blocks (merged & cleaned from ${rawBlocks.size} raw blocks)")
 
                 // 3. Gemini Translation
                 val apiKey = prefs.apiKey
