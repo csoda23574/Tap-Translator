@@ -17,6 +17,7 @@ import android.view.WindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
 
 class ScreenCaptureHelper(
     private val context: Context,
@@ -38,14 +39,17 @@ class ScreenCaptureHelper(
     private var screenDensity = 0
 
     private val bitmapLock = Any()
+    @Volatile
     private var lastFrameBitmap: Bitmap? = null
 
     @Volatile
-    private var isReleased = false
+    var isProjectionAlive = true
+        private set
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            Log.d(TAG, "MediaProjection stopped by system")
+            Log.w(TAG, "MediaProjection stopped by system")
+            isProjectionAlive = false
             release()
         }
     }
@@ -82,7 +86,7 @@ class ScreenCaptureHelper(
     }
 
     private fun initVirtualDisplay() {
-        if (isReleased) return
+        if (!isProjectionAlive) return
         try {
             updateScreenDimensions()
 
@@ -90,24 +94,25 @@ class ScreenCaptureHelper(
                 screenWidth,
                 screenHeight,
                 PixelFormat.RGBA_8888,
-                3
+                2
             )
 
             // Continuously drain and cache the latest screen frame
-            // This prevents ImageReader buffer queue exhaustion and guarantees instant capture
             reader.setOnImageAvailableListener({ ir ->
                 var img: Image? = null
                 try {
                     img = ir.acquireLatestImage()
                     if (img != null) {
                         val bmp = imageToBitmap(img, screenWidth, screenHeight)
-                        synchronized(bitmapLock) {
-                            lastFrameBitmap?.recycle()
-                            lastFrameBitmap = bmp
+                        if (bmp != null) {
+                            synchronized(bitmapLock) {
+                                lastFrameBitmap?.recycle()
+                                lastFrameBitmap = bmp
+                            }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error processing frame in listener", e)
+                    Log.e(TAG, "Error in onImageAvailable: ${e.message}", e)
                 } finally {
                     img?.close()
                 }
@@ -116,7 +121,7 @@ class ScreenCaptureHelper(
             imageReader = reader
 
             virtualDisplay = mediaProjection.createVirtualDisplay(
-                "TapTranslator_Continuous_Capture",
+                "TapTranslator_Capture",
                 screenWidth,
                 screenHeight,
                 screenDensity,
@@ -125,16 +130,19 @@ class ScreenCaptureHelper(
                 null,
                 handler
             )
-            Log.d(TAG, "Continuous VirtualDisplay initialized ($screenWidth x $screenHeight, density=$screenDensity)")
+            Log.d(TAG, "VirtualDisplay created: $screenWidth x $screenHeight, density=$screenDensity")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize VirtualDisplay", e)
+            Log.e(TAG, "Failed creating VirtualDisplay", e)
         }
     }
 
     suspend fun captureScreen(): Bitmap? = withContext(Dispatchers.Default) {
-        if (isReleased) return@withContext null
+        if (!isProjectionAlive) {
+            Log.w(TAG, "Capture called but projection is not alive")
+            return@withContext null
+        }
 
-        // If a frame is already cached, return a fresh copy immediately
+        // 1. Check if cached frame is ready
         synchronized(bitmapLock) {
             lastFrameBitmap?.let { cached ->
                 if (!cached.isRecycled) {
@@ -143,9 +151,27 @@ class ScreenCaptureHelper(
             }
         }
 
-        // If not cached yet (e.g. at immediate startup), wait up to 500ms for a frame
+        // 2. Try direct acquire from ImageReader
+        try {
+            val reader = imageReader
+            val directImage = reader?.acquireLatestImage()
+            if (directImage != null) {
+                try {
+                    val bmp = imageToBitmap(directImage, screenWidth, screenHeight)
+                    if (bmp != null) {
+                        return@withContext bmp
+                    }
+                } finally {
+                    directImage.close()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct image acquire attempt: ${e.message}")
+        }
+
+        // 3. Wait up to 800ms for a frame
         var attempts = 0
-        while (attempts < 10) {
+        while (attempts < 16) {
             delay(50)
             synchronized(bitmapLock) {
                 lastFrameBitmap?.let { cached ->
@@ -157,38 +183,55 @@ class ScreenCaptureHelper(
             attempts++
         }
 
-        Log.w(TAG, "Screen capture timed out waiting for initial frame")
+        Log.w(TAG, "Screen capture timed out after 800ms")
         return@withContext null
     }
 
-    private fun imageToBitmap(image: Image, width: Int, height: Int): Bitmap {
-        val plane = image.planes[0]
-        val buffer = plane.buffer
-        buffer.rewind() // Always rewind buffer before copying
+    private fun imageToBitmap(image: Image, width: Int, height: Int): Bitmap? {
+        return try {
+            val plane = image.planes[0]
+            val buffer = plane.buffer
+            buffer.rewind()
 
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * width
+            val pixelStride = plane.pixelStride
+            val rowStride = plane.rowStride
+            val rowPadding = rowStride - pixelStride * width
 
-        val tempBitmap = Bitmap.createBitmap(
-            width + rowPadding / pixelStride,
-            height,
-            Bitmap.Config.ARGB_8888
-        )
-        tempBitmap.copyPixelsFromBuffer(buffer)
+            val bitmapWidth = width + rowPadding / pixelStride
+            val requiredBytes = bitmapWidth * height * 4
 
-        return if (rowPadding == 0) {
-            tempBitmap
-        } else {
-            val cropped = Bitmap.createBitmap(tempBitmap, 0, 0, width, height)
-            tempBitmap.recycle()
-            cropped
+            // Fix the notorious "Buffer not large enough for pixels" Android GPU padding bug
+            val safeBuffer: ByteBuffer = if (buffer.remaining() < requiredBytes) {
+                val newBuffer = ByteBuffer.allocateDirect(requiredBytes)
+                buffer.rewind()
+                newBuffer.put(buffer)
+                newBuffer.rewind()
+                newBuffer
+            } else {
+                buffer
+            }
+
+            val tempBitmap = Bitmap.createBitmap(
+                bitmapWidth,
+                height,
+                Bitmap.Config.ARGB_8888
+            )
+            tempBitmap.copyPixelsFromBuffer(safeBuffer)
+
+            if (rowPadding == 0) {
+                tempBitmap
+            } else {
+                val cropped = Bitmap.createBitmap(tempBitmap, 0, 0, width, height)
+                tempBitmap.recycle()
+                cropped
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error in imageToBitmap: ${e.message}", e)
+            null
         }
     }
 
     fun release() {
-        if (isReleased) return
-        isReleased = true
         try {
             imageReader?.setOnImageAvailableListener(null, null)
             virtualDisplay?.release()
@@ -199,8 +242,6 @@ class ScreenCaptureHelper(
                 lastFrameBitmap?.recycle()
                 lastFrameBitmap = null
             }
-            mediaProjection.unregisterCallback(projectionCallback)
-            mediaProjection.stop()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing ScreenCaptureHelper", e)
         }

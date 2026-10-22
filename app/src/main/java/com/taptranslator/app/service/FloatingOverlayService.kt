@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
@@ -196,6 +197,15 @@ class FloatingOverlayService : Service() {
                 floatingButtonView?.alpha = 0f
                 delay(30)
 
+                if (screenCaptureHelper?.isProjectionAlive != true) {
+                    Toast.makeText(
+                        this@FloatingOverlayService,
+                        "화면 캡처 권한이 만료되었습니다. 앱에서 번역기를 다시 시작해주세요.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+
                 val bitmap: Bitmap? = try {
                     screenCaptureHelper?.captureScreen()
                 } finally {
@@ -203,7 +213,7 @@ class FloatingOverlayService : Service() {
                 }
 
                 if (bitmap == null) {
-                    Toast.makeText(this@FloatingOverlayService, "화면 캡처를 준비 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@FloatingOverlayService, "화면 캡처 대기 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
 
@@ -226,7 +236,7 @@ class FloatingOverlayService : Service() {
                 if (apiKey.isBlank()) {
                     Toast.makeText(
                         this@FloatingOverlayService,
-                        "Gemini API 키가 설정되지 않았습니다. 앱 설정에서 키를 등록해주세요.",
+                        "Gemini API 키가 설정되지 않았습니다. 앱 설정에서 키를 먼저 등록해주세요.",
                         Toast.LENGTH_LONG
                     ).show()
                     return@launch
@@ -267,6 +277,11 @@ class FloatingOverlayService : Service() {
     private fun showResultOverlay(blocks: List<RecognizedBlock>) {
         dismissResultOverlay()
 
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "다른 앱 위에 그리기 권한이 필요합니다.", Toast.LENGTH_LONG).show()
+            return
+        }
+
         val displayMode = prefs.overlayDisplayMode
         val alpha = prefs.overlayBackgroundAlpha
 
@@ -283,9 +298,10 @@ class FloatingOverlayService : Service() {
         try {
             windowManager.addView(overlay, overlay.windowLayoutParams)
             currentResultOverlay = overlay
-            Toast.makeText(this, "${blocks.size}개 문장 번역 완료!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "⚡ ${blocks.size}개 문장 번역 완료!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed adding ResultOverlayView", e)
+            Toast.makeText(this, "오버레이 표시 실패: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
