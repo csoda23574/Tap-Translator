@@ -454,8 +454,9 @@ fun MainScreen(
                     }
 
                     val presetModels = listOf(
-                        "gemini-3.8-flash" to "Gemini 3.8 Flash (최신 Google 권장 / 초고속)",
-                        "gemini-1.5-flash" to "Gemini 1.5 Flash (안정적 구버전 / 부하 대체용)",
+                        "gemini-3.8-flash" to "Gemini 3.8 Flash (최신 모델 / 부하 시 자동 우회)",
+                        "gemini-flash-latest" to "Gemini Flash Latest (Google 부하 분산 공식 모델)",
+                        "gemini-2.5-flash" to "Gemini 2.5 Flash (안정적 표준 버전)",
                         "gemini-3.8-pro" to "Gemini 3.8 Pro (최고 퀄리티 / 문맥 이해)"
                     )
 

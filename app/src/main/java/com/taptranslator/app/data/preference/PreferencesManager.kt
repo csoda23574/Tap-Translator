@@ -42,8 +42,8 @@ class PreferencesManager(context: Context) {
     var selectedModel: String
         get() {
             val saved = prefs.getString(KEY_SELECTED_MODEL, DEFAULT_MODEL) ?: DEFAULT_MODEL
-            // Automatically migrate deprecated model
-            return if (saved == "gemini-2.0-flash") {
+            // Automatically migrate deprecated models
+            return if (saved == "gemini-2.0-flash" || saved == "gemini-1.5-flash") {
                 DEFAULT_MODEL.also { selectedModel = it }
             } else {
                 saved
@@ -91,7 +91,8 @@ class PreferencesManager(context: Context) {
 
     companion object {
         const val DEFAULT_MODEL = "gemini-3.8-flash"
-        const val MODEL_15_FLASH = "gemini-1.5-flash"
+        const val MODEL_FLASH_LATEST = "gemini-flash-latest"
+        const val MODEL_25_FLASH = "gemini-2.5-flash"
         const val MODEL_38_PRO = "gemini-3.8-pro"
 
         private const val KEY_API_KEY = "key_gemini_api_key"

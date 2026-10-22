@@ -20,8 +20,18 @@ class GeminiTranslator {
     companion object {
         private const val TAG = "GeminiTranslator"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        const val FALLBACK_STABLE_MODEL = "gemini-1.5-flash"
+        const val FALLBACK_STABLE_MODEL = "gemini-flash-latest"
+        val DEFAULT_FALLBACK_MODELS = listOf(
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-2.5-flash",
+            "gemini-flash-latest"
+        )
     }
+
+    @Volatile
+    private var cachedCandidates: List<String> = emptyList()
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -63,13 +73,19 @@ class GeminiTranslator {
                 if (!canGenerate) continue
 
                 val lower = modelName.lowercase()
-                // Must be Flash, and must NOT be Lite, 8b, experimental, or preview
+                // Must be Flash text model (exclude lite, 8b, image-only, audio/tts, experimental, preview)
                 if (lower.contains("flash") &&
                     !lower.contains("lite") &&
                     !lower.contains("8b") &&
                     !lower.contains("exp") &&
                     !lower.contains("preview") &&
-                    !lower.contains("deprecated")
+                    !lower.contains("deprecated") &&
+                    !lower.contains("image") &&
+                    !lower.contains("tts") &&
+                    !lower.contains("audio") &&
+                    !lower.contains("video") &&
+                    !lower.contains("embedding") &&
+                    !lower.contains("realtime")
                 ) {
                     candidateModels.add(modelName)
                 }
@@ -80,15 +96,20 @@ class GeminiTranslator {
                 return@withContext null
             }
 
-            // Sort by version descending (e.g. 3.8 > 2.5 > 2.0 > 1.5)
+            // Sort by version descending (3.8 > 3.7 > 3.6 > 3.5 > 2.5 > flash-latest)
             val sorted = candidateModels.sortedWith { m1, m2 ->
                 val v1 = extractVersion(m1)
                 val v2 = extractVersion(m2)
-                v2.compareTo(v1)
+                if (v1 != v2) {
+                    v2.compareTo(v1)
+                } else {
+                    m1.compareTo(m2)
+                }
             }
 
+            cachedCandidates = sorted
             val latest = sorted.firstOrNull()
-            AppLogger.i(TAG, "Auto-detected latest Flash model: $latest (candidates: $candidateModels)")
+            AppLogger.i(TAG, "Auto-detected latest Flash model: $latest (filtered candidates: $sorted)")
             return@withContext latest
         } catch (e: Exception) {
             AppLogger.e(TAG, "Error fetching latest Flash model: ${e.message}", e)
@@ -102,6 +123,27 @@ class GeminiTranslator {
         return match?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
     }
 
+    private fun isRecoverableError(e: Throwable): Boolean {
+        val msg = e.message.orEmpty().lowercase()
+        return msg.contains("503") ||
+                msg.contains("high demand") ||
+                msg.contains("429") ||
+                msg.contains("resource has been exhausted") ||
+                msg.contains("quota") ||
+                msg.contains("404") ||
+                msg.contains("not found") ||
+                msg.contains("500") ||
+                msg.contains("overloaded")
+    }
+
+    private fun getFallbackCandidates(currentModel: String): List<String> {
+        val pool = (cachedCandidates.ifEmpty { DEFAULT_FALLBACK_MODELS }).toMutableList()
+        if (!pool.contains(FALLBACK_STABLE_MODEL)) {
+            pool.add(FALLBACK_STABLE_MODEL)
+        }
+        return pool.filter { it != currentModel }
+    }
+
     suspend fun testApiKey(apiKey: String, model: String = "gemini-3.8-flash"): Result<String> = withContext(Dispatchers.IO) {
         try {
             if (apiKey.isBlank()) {
@@ -110,30 +152,31 @@ class GeminiTranslator {
             }
 
             AppLogger.i(TAG, "testApiKey starting for model=$model")
-            var targetModel = model
-            var result = executeTestCall(apiKey, targetModel)
+            val primaryResult = executeTestCall(apiKey, model)
 
-            // If the model had high demand / temporary failure, test with fallback model
-            if (result.isFailure && result.exceptionOrNull()?.message?.contains("high demand", ignoreCase = true) == true) {
-                if (targetModel != FALLBACK_STABLE_MODEL) {
-                    AppLogger.w(TAG, "testApiKey: $model high demand, falling back to $FALLBACK_STABLE_MODEL")
-                    targetModel = FALLBACK_STABLE_MODEL
-                    result = executeTestCall(apiKey, targetModel)
-                    if (result.isSuccess) {
-                        val msg = "연결 성공! ($model 부하 시 $FALLBACK_STABLE_MODEL 로 자동 전환)"
+            if (primaryResult.isSuccess) {
+                AppLogger.i(TAG, "testApiKey success: ${primaryResult.getOrNull()}")
+                return@withContext primaryResult
+            }
+
+            // If the model had high demand / temporary failure, test with fallback cascade
+            val ex = primaryResult.exceptionOrNull()
+            if (ex != null && isRecoverableError(ex)) {
+                AppLogger.w(TAG, "testApiKey: $model temporary error (${ex.message}), checking fallback cascade...")
+                val fallbacks = getFallbackCandidates(model)
+                for (fb in fallbacks) {
+                    AppLogger.d(TAG, "testApiKey: testing fallback candidate $fb")
+                    val fbResult = executeTestCall(apiKey, fb)
+                    if (fbResult.isSuccess) {
+                        val msg = "연결 성공! ($model 부하 시 $fb 로 자동 전환)"
                         AppLogger.i(TAG, "testApiKey fallback success: $msg")
                         return@withContext Result.success(msg)
                     }
                 }
             }
 
-            if (result.isSuccess) {
-                AppLogger.i(TAG, "testApiKey success: ${result.getOrNull()}")
-            } else {
-                AppLogger.e(TAG, "testApiKey failed: ${result.exceptionOrNull()?.message}")
-            }
-
-            result
+            AppLogger.e(TAG, "testApiKey failed: ${primaryResult.exceptionOrNull()?.message}")
+            primaryResult
         } catch (e: Exception) {
             AppLogger.e(TAG, "Test API key unexpected failure: ${e.message}", e)
             Result.failure(e)
@@ -197,34 +240,47 @@ class GeminiTranslator {
         val sampleText = blocks.firstOrNull()?.originalText?.take(60)?.replace("\n", " ")
         AppLogger.d(TAG, "Sample block 0 [${blocks.firstOrNull()?.rect}]: \"$sampleText\"")
 
-        // First attempt with requested model
+        // 1. First attempt with requested model
         try {
             val res = executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
-            AppLogger.i(TAG, "translateBlocks completed successfully: ${res.size} blocks translated")
+            AppLogger.i(TAG, "translateBlocks completed successfully with $model: ${res.size} blocks translated")
             return@withContext res
         } catch (e: Exception) {
-            val isHighDemand = e.message?.contains("high demand", ignoreCase = true) == true ||
-                    e.message?.contains("503", ignoreCase = true) == true
+            val isRecoverable = isRecoverableError(e)
+            AppLogger.w(TAG, "Primary model $model failed (recoverable=$isRecoverable): ${e.message}")
 
-            if (isHighDemand) {
-                AppLogger.w(TAG, "Model $model high demand, retrying once after delay...")
-                delay(1000)
+            if (isRecoverable) {
+                // Try quick retry on primary model
                 try {
+                    delay(800)
+                    AppLogger.d(TAG, "Retrying once on primary model $model after delay...")
                     val res = executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
-                    AppLogger.i(TAG, "translateBlocks retry succeeded with model $model")
+                    AppLogger.i(TAG, "translateBlocks retry on $model succeeded!")
                     return@withContext res
                 } catch (retryEx: Exception) {
-                    AppLogger.w(TAG, "Retry on $model failed, falling back to $FALLBACK_STABLE_MODEL: ${retryEx.message}")
-                    if (model != FALLBACK_STABLE_MODEL) {
-                        val fallbackRes = executeTranslateCall(blocks, apiKey, FALLBACK_STABLE_MODEL, sourceLang, targetLang, tone)
-                        AppLogger.i(TAG, "translateBlocks fallback to $FALLBACK_STABLE_MODEL succeeded")
-                        return@withContext fallbackRes
-                    }
-                    throw retryEx
+                    AppLogger.w(TAG, "Retry on $model failed: ${retryEx.message}")
                 }
             }
-            AppLogger.e(TAG, "translateBlocks error: ${e.message}", e)
-            throw e
+
+            // Fallback cascade across available candidates
+            val fallbackCandidates = getFallbackCandidates(model)
+            AppLogger.i(TAG, "Starting fallback cascade through: $fallbackCandidates")
+
+            var lastException: Exception = e
+            for (fallbackModel in fallbackCandidates) {
+                try {
+                    AppLogger.i(TAG, "Attempting fallback model: $fallbackModel")
+                    val res = executeTranslateCall(blocks, apiKey, fallbackModel, sourceLang, targetLang, tone)
+                    AppLogger.i(TAG, "translateBlocks fallback to $fallbackModel SUCCEEDED! (${res.size} blocks translated)")
+                    return@withContext res
+                } catch (fbEx: Exception) {
+                    AppLogger.w(TAG, "Fallback model $fallbackModel failed: ${fbEx.message}")
+                    lastException = fbEx
+                }
+            }
+
+            AppLogger.e(TAG, "All models in fallback cascade failed: ${lastException.message}", lastException)
+            throw lastException
         }
     }
 
