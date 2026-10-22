@@ -28,6 +28,7 @@ import com.taptranslator.app.data.model.ScriptType
 import com.taptranslator.app.data.preference.PreferencesManager
 import com.taptranslator.app.ocr.OcrEngine
 import com.taptranslator.app.translation.GeminiTranslator
+import com.taptranslator.app.ui.overlay.ExitConfirmDialogView
 import com.taptranslator.app.ui.overlay.FloatingButtonView
 import com.taptranslator.app.ui.overlay.ResultOverlayView
 import com.taptranslator.app.util.AppLogger
@@ -67,6 +68,7 @@ class FloatingOverlayService : Service() {
 
     private var floatingButtonView: FloatingButtonView? = null
     private var currentResultOverlay: ResultOverlayView? = null
+    private var exitConfirmDialog: ExitConfirmDialogView? = null
 
     @Volatile
     private var isProcessing = false
@@ -180,8 +182,8 @@ class FloatingOverlayService : Service() {
                 handleTranslateClick()
             },
             onLongClickClose = {
-                AppLogger.i(TAG, "FloatingButtonView long-clicked, stopping service")
-                stopForegroundService()
+                AppLogger.i(TAG, "FloatingButtonView long-clicked -> showing exit confirmation dialog")
+                showExitConfirmDialog()
             }
         )
 
@@ -201,6 +203,7 @@ class FloatingOverlayService : Service() {
         isProcessing = true
         AppLogger.i(TAG, "=== Translate button clicked ===")
 
+        dismissExitConfirmDialog()
         dismissResultOverlay()
 
         // 1. Immediately switch button to loading spinner
@@ -350,8 +353,47 @@ class FloatingOverlayService : Service() {
         }
     }
 
+    private fun showExitConfirmDialog() {
+        dismissExitConfirmDialog()
+
+        if (!Settings.canDrawOverlays(this)) return
+
+        val dialog = ExitConfirmDialogView(
+            context = this,
+            onConfirmExit = {
+                dismissExitConfirmDialog()
+                stopForegroundService()
+                Toast.makeText(this, "번역기가 종료되었습니다.", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = {
+                dismissExitConfirmDialog()
+            }
+        )
+
+        try {
+            windowManager.addView(dialog, dialog.windowLayoutParams)
+            exitConfirmDialog = dialog
+            AppLogger.i(TAG, "ExitConfirmDialogView added to WindowManager")
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "Failed adding ExitConfirmDialogView to WindowManager", e)
+        }
+    }
+
+    private fun dismissExitConfirmDialog() {
+        exitConfirmDialog?.let { dialog ->
+            try {
+                windowManager.removeView(dialog)
+                AppLogger.d(TAG, "ExitConfirmDialogView removed")
+            } catch (e: Exception) {
+                AppLogger.w(TAG, "Failed removing ExitConfirmDialogView: ${e.message}")
+            }
+            exitConfirmDialog = null
+        }
+    }
+
     private fun stopForegroundService() {
         AppLogger.i(TAG, "stopForegroundService called")
+        dismissExitConfirmDialog()
         dismissResultOverlay()
 
         floatingButtonView?.let { button ->

@@ -6,10 +6,14 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -33,6 +37,19 @@ class FloatingButtonView(
     private var initialTouchX = 0f
     private var initialTouchY = 0f
     private var isDragging = false
+    private var isLongPressed = false
+
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    private val longPressRunnable = Runnable {
+        if (!isDragging) {
+            isLongPressed = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            onLongClickClose()
+        }
+    }
 
     private val iconView: ImageView
     private val progressBar: ProgressBar
@@ -110,17 +127,22 @@ class FloatingButtonView(
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     isDragging = false
+                    isLongPressed = false
+                    uiHandler.postDelayed(longPressRunnable, longPressTimeout)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
 
-                    if (abs(dx) > 10 || abs(dy) > 10) {
-                        isDragging = true
+                    if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                        if (!isDragging) {
+                            isDragging = true
+                            uiHandler.removeCallbacks(longPressRunnable)
+                        }
                     }
 
-                    if (isDragging) {
+                    if (isDragging && !isLongPressed) {
                         windowLayoutParams.x = initialX + dx
                         windowLayoutParams.y = initialY + dy
                         try {
@@ -132,11 +154,21 @@ class FloatingButtonView(
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!isDragging) {
+                    uiHandler.removeCallbacks(longPressRunnable)
+                    if (isLongPressed) {
+                        // Handled by long-press exit dialog
+                        isLongPressed = false
+                    } else if (!isDragging) {
                         onTranslateClick()
                     } else {
                         snapToEdge()
                     }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    uiHandler.removeCallbacks(longPressRunnable)
+                    isDragging = false
+                    isLongPressed = false
                     true
                 }
                 else -> false
