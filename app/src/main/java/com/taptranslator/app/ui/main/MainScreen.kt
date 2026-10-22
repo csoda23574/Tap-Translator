@@ -224,72 +224,119 @@ fun MainScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Gemini API 키 설정", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = uiState.apiKey,
-                        onValueChange = { viewModel.updateApiKey(it) },
-                        label = { Text("Gemini API Key") },
-                        placeholder = { Text("AIzaSy...") },
-                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                        trailingIcon = {
-                            IconButton(onClick = { showPassword = !showPassword }) {
-                                Icon(
-                                    imageVector = if (showPassword) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                    contentDescription = null
-                                )
-                            }
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Google AI Studio에서 무료 발급 가능",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                        Button(
-                            onClick = { viewModel.testApiKey() },
-                            enabled = !uiState.isTestingKey && uiState.apiKey.isNotBlank(),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            if (uiState.isTestingKey) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
-                                )
-                            } else {
-                                Text("연결 테스트", fontSize = 12.sp)
-                            }
-                        }
-                    }
-
-                    uiState.testResultMessage?.let { msg ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        val isSuccess = uiState.testSuccess == true
-                        Surface(
-                            color = if (isSuccess) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
-                            shape = RoundedCornerShape(8.dp),
+                    if (!uiState.isApiKeyExpanded && uiState.apiKey.isNotBlank()) {
+                        // Collapsed view when API key is successfully linked
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                text = msg,
-                                color = if (isSuccess) Color(0xFF2E7D32) else Color(0xFFC62828),
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(8.dp)
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF4CAF50),
+                                modifier = Modifier.size(28.dp)
                             )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Gemini API 연동 완료",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = "보안 저장소 연동됨 (••••••••${uiState.apiKey.takeLast(4)})",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { viewModel.setApiKeyExpanded(true) },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("키 변경", fontSize = 12.sp)
+                            }
+                        }
+                    } else {
+                        // Expanded view for entering or editing API key
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Gemini API 키 설정", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Spacer(modifier = Modifier.weight(1f))
+                            if (uiState.apiKey.isNotBlank()) {
+                                TextButton(
+                                    onClick = { viewModel.setApiKeyExpanded(false) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("접기", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = uiState.apiKey,
+                            onValueChange = { viewModel.updateApiKey(it) },
+                            label = { Text("Gemini API Key") },
+                            placeholder = { Text("AIzaSy...") },
+                            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { showPassword = !showPassword }) {
+                                    Icon(
+                                        imageVector = if (showPassword) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = null
+                                    )
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Google AI Studio에서 무료 발급 가능",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Button(
+                                onClick = { viewModel.testApiKey() },
+                                enabled = !uiState.isTestingKey && uiState.apiKey.isNotBlank(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                if (uiState.isTestingKey) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Text("연결 테스트", fontSize = 12.sp)
+                                }
+                            }
+                        }
+
+                        uiState.testResultMessage?.let { msg ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            val isSuccess = uiState.testSuccess == true
+                            Surface(
+                                color = if (isSuccess) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = msg,
+                                    color = if (isSuccess) Color(0xFF2E7D32) else Color(0xFFC62828),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -349,15 +396,62 @@ fun MainScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("AI 모델 선택 (Gemini)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("AI 모델 연동 (Gemini Flash)", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     }
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    // Auto-sync banner
+                    Surface(
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (uiState.isCheckingModel) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "최신 Flash 모델 확인 중...",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = "최신 Flash 모델 자동 감지 연동 활성화",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "연결된 모델: ${uiState.selectedModel}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     val presetModels = listOf(
                         "gemini-3.8-flash" to "Gemini 3.8 Flash (최신 Google 권장 / 초고속)",
-                        "gemini-1.5-flash" to "Gemini 1.5 Flash (안정적 구버전)",
+                        "gemini-1.5-flash" to "Gemini 1.5 Flash (안정적 구버전 / 부하 대체용)",
                         "gemini-3.8-pro" to "Gemini 3.8 Pro (최고 퀄리티 / 문맥 이해)"
                     )
 

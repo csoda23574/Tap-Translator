@@ -16,7 +16,10 @@ import kotlinx.coroutines.launch
 
 data class MainUiState(
     val apiKey: String = "",
+    val isApiKeyExpanded: Boolean = true,
     val selectedModel: String = PreferencesManager.DEFAULT_MODEL,
+    val autoDetectedModel: String? = null,
+    val isCheckingModel: Boolean = false,
     val sourceLang: String = "ja",
     val targetLang: String = "ko",
     val translationTone: TranslationTone = TranslationTone.GAME,
@@ -35,6 +38,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val _uiState = MutableStateFlow(
         MainUiState(
             apiKey = prefs.apiKey,
+            isApiKeyExpanded = prefs.apiKey.isBlank(),
             selectedModel = prefs.selectedModel,
             sourceLang = prefs.sourceLanguage,
             targetLang = prefs.targetLanguage,
@@ -45,9 +49,44 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    init {
+        // Automatically check and sync latest Flash model if API key is present
+        if (prefs.apiKey.isNotBlank()) {
+            checkAndSyncLatestFlashModel(prefs.apiKey)
+        }
+    }
+
+    fun setApiKeyExpanded(expanded: Boolean) {
+        _uiState.update { it.copy(isApiKeyExpanded = expanded) }
+    }
+
     fun updateApiKey(newKey: String) {
         prefs.apiKey = newKey
         _uiState.update { it.copy(apiKey = newKey, testResultMessage = null, testSuccess = null) }
+        if (newKey.isNotBlank()) {
+            checkAndSyncLatestFlashModel(newKey)
+        }
+    }
+
+    fun checkAndSyncLatestFlashModel(key: String = _uiState.value.apiKey) {
+        if (key.isBlank()) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isCheckingModel = true) }
+            val latestModel = translator.fetchLatestFlashModel(key)
+            if (latestModel != null) {
+                prefs.selectedModel = latestModel
+                _uiState.update {
+                    it.copy(
+                        selectedModel = latestModel,
+                        autoDetectedModel = latestModel,
+                        isCheckingModel = false
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(isCheckingModel = false) }
+            }
+        }
     }
 
     fun updateSelectedModel(model: String) {
@@ -109,9 +148,12 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                         it.copy(
                             isTestingKey = false,
                             testResultMessage = msg,
-                            testSuccess = true
+                            testSuccess = true,
+                            isApiKeyExpanded = false // Automatically collapse on successful test!
                         )
                     }
+                    // Also trigger model sync on success
+                    checkAndSyncLatestFlashModel(key)
                 },
                 onFailure = { err ->
                     _uiState.update {

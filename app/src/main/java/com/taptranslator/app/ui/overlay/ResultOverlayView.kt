@@ -45,10 +45,14 @@ class ResultOverlayView(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             windowType,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
 
         // Semi-transparent dim background (tap to dismiss)
         setBackgroundColor(Color.argb((255 * 0.35f).toInt(), 0, 0, 0))
@@ -108,6 +112,7 @@ class ResultOverlayView(
             val boxHeight = (r.height().coerceAtLeast((28 * density).toInt()))
 
             val boxParams = LayoutParams(boxWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.START
                 leftMargin = r.left
                 topMargin = r.top
             }

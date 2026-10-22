@@ -67,6 +67,7 @@ class FloatingOverlayService : Service() {
     private var floatingButtonView: FloatingButtonView? = null
     private var currentResultOverlay: ResultOverlayView? = null
 
+    @Volatile
     private var isProcessing = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -187,27 +188,28 @@ class FloatingOverlayService : Service() {
 
         dismissResultOverlay()
 
+        // 1. Immediately provide visual feedback with spinner on the floating button
+        floatingButtonView?.setLoading(true)
+
         serviceScope.launch {
             try {
-                // Step 1: Temporarily hide button to avoid capturing itself
-                floatingButtonView?.visibility = View.INVISIBLE
-                delay(80)
+                // Briefly make button transparent to not capture itself in screenshot
+                floatingButtonView?.alpha = 0f
+                delay(30)
 
-                // Step 2: Capture screen bitmap
-                val bitmap: Bitmap? = screenCaptureHelper?.captureScreen()
-
-                // Step 3: Restore button and show spinner
-                floatingButtonView?.visibility = View.VISIBLE
-                floatingButtonView?.setLoading(true)
+                val bitmap: Bitmap? = try {
+                    screenCaptureHelper?.captureScreen()
+                } finally {
+                    // Always restore button opacity immediately after capture
+                    floatingButtonView?.alpha = 1f
+                }
 
                 if (bitmap == null) {
-                    Toast.makeText(this@FloatingOverlayService, "화면 캡처에 실패했습니다.", Toast.LENGTH_SHORT).show()
-                    floatingButtonView?.setLoading(false)
-                    isProcessing = false
+                    Toast.makeText(this@FloatingOverlayService, "화면 캡처 대기 중입니다. 다시 시도해주세요.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
 
-                // Step 4: Run OCR
+                // 2. OCR Text extraction
                 val sourceLang = prefs.sourceLanguage
                 val scriptType = LanguageOption.SUPPORTED_SOURCE.firstOrNull { it.code == sourceLang }?.scriptType
                     ?: ScriptType.LATIN
@@ -218,21 +220,17 @@ class FloatingOverlayService : Service() {
 
                 if (recognizedBlocks.isEmpty()) {
                     Toast.makeText(this@FloatingOverlayService, "인식된 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
-                    floatingButtonView?.setLoading(false)
-                    isProcessing = false
                     return@launch
                 }
 
-                // Step 5: Translate with Gemini Flash
+                // 3. Gemini Translation
                 val apiKey = prefs.apiKey
                 if (apiKey.isBlank()) {
                     Toast.makeText(
                         this@FloatingOverlayService,
-                        "Gemini API 키가 설정되지 않았습니다. 앱 설정에서 키를 입력하세요.",
+                        "Gemini API 키를 먼저 입력해주세요.",
                         Toast.LENGTH_LONG
                     ).show()
-                    floatingButtonView?.setLoading(false)
-                    isProcessing = false
                     return@launch
                 }
 
@@ -249,7 +247,7 @@ class FloatingOverlayService : Service() {
                     tone = tone
                 )
 
-                // Step 6: Show Result Overlay
+                // 4. Display Result Overlay
                 showResultOverlay(translatedBlocks)
 
             } catch (e: Exception) {
@@ -260,6 +258,8 @@ class FloatingOverlayService : Service() {
                     Toast.LENGTH_LONG
                 ).show()
             } finally {
+                floatingButtonView?.alpha = 1f
+                floatingButtonView?.visibility = View.VISIBLE
                 floatingButtonView?.setLoading(false)
                 isProcessing = false
             }
