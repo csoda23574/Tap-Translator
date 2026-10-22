@@ -8,15 +8,15 @@ import android.hardware.display.VirtualDisplay
 import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
 
 class ScreenCaptureHelper(
     private val context: Context,
@@ -37,6 +37,9 @@ class ScreenCaptureHelper(
     private var screenHeight = 0
     private var screenDensity = 0
 
+    private val bitmapLock = Any()
+    private var lastFrameBitmap: Bitmap? = null
+
     @Volatile
     private var isReleased = false
 
@@ -49,7 +52,6 @@ class ScreenCaptureHelper(
 
     init {
         try {
-            // Android 14+ STRICT requirement: Callback MUST be registered before creating VirtualDisplay
             mediaProjection.registerCallback(projectionCallback, handler)
         } catch (e: Exception) {
             Log.e(TAG, "Error registering MediaProjection callback", e)
@@ -59,12 +61,24 @@ class ScreenCaptureHelper(
     }
 
     fun updateScreenDimensions() {
-        val metrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getRealMetrics(metrics)
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
-        screenDensity = metrics.densityDpi
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val metrics = windowManager.maximumWindowMetrics
+            val bounds = metrics.bounds
+            screenWidth = bounds.width()
+            screenHeight = bounds.height()
+            screenDensity = context.resources.configuration.densityDpi
+        } else {
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            screenWidth = metrics.widthPixels
+            screenHeight = metrics.heightPixels
+            screenDensity = metrics.densityDpi
+        }
+
+        if (screenWidth <= 0) screenWidth = 1080
+        if (screenHeight <= 0) screenHeight = 2400
+        if (screenDensity <= 0) screenDensity = 420
     }
 
     private fun initVirtualDisplay() {
@@ -78,10 +92,31 @@ class ScreenCaptureHelper(
                 PixelFormat.RGBA_8888,
                 3
             )
+
+            // Continuously drain and cache the latest screen frame
+            // This prevents ImageReader buffer queue exhaustion and guarantees instant capture
+            reader.setOnImageAvailableListener({ ir ->
+                var img: Image? = null
+                try {
+                    img = ir.acquireLatestImage()
+                    if (img != null) {
+                        val bmp = imageToBitmap(img, screenWidth, screenHeight)
+                        synchronized(bitmapLock) {
+                            lastFrameBitmap?.recycle()
+                            lastFrameBitmap = bmp
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing frame in listener", e)
+                } finally {
+                    img?.close()
+                }
+            }, handler)
+
             imageReader = reader
 
             virtualDisplay = mediaProjection.createVirtualDisplay(
-                "TapTranslator_Persistent_Capture",
+                "TapTranslator_Continuous_Capture",
                 screenWidth,
                 screenHeight,
                 screenDensity,
@@ -90,7 +125,7 @@ class ScreenCaptureHelper(
                 null,
                 handler
             )
-            Log.d(TAG, "VirtualDisplay initialized ($screenWidth x $screenHeight)")
+            Log.d(TAG, "Continuous VirtualDisplay initialized ($screenWidth x $screenHeight, density=$screenDensity)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize VirtualDisplay", e)
         }
@@ -99,69 +134,38 @@ class ScreenCaptureHelper(
     suspend fun captureScreen(): Bitmap? = withContext(Dispatchers.Default) {
         if (isReleased) return@withContext null
 
-        val reader = imageReader ?: run {
-            initVirtualDisplay()
-            imageReader
-        } ?: return@withContext null
-
-        // Try to acquire the latest available image immediately
-        var latestImage: Image? = null
-        try {
-            latestImage = reader.acquireLatestImage()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed acquiring latest image", e)
-        }
-
-        if (latestImage != null) {
-            return@withContext try {
-                imageToBitmap(latestImage, screenWidth, screenHeight)
-            } finally {
-                latestImage.close()
+        // If a frame is already cached, return a fresh copy immediately
+        synchronized(bitmapLock) {
+            lastFrameBitmap?.let { cached ->
+                if (!cached.isRecycled) {
+                    return@withContext cached.copy(Bitmap.Config.ARGB_8888, true)
+                }
             }
         }
 
-        // If no image immediately ready, wait for the next frame via listener
-        suspendCancellableCoroutine { continuation ->
-            var isHandled = false
-
-            reader.setOnImageAvailableListener({ ir ->
-                if (!isHandled) {
-                    var img: Image? = null
-                    try {
-                        img = ir.acquireLatestImage()
-                        if (img != null) {
-                            isHandled = true
-                            reader.setOnImageAvailableListener(null, null)
-                            val bitmap = imageToBitmap(img, screenWidth, screenHeight)
-                            continuation.resume(bitmap)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error in onImageAvailable", e)
-                        if (!isHandled) {
-                            isHandled = true
-                            reader.setOnImageAvailableListener(null, null)
-                            continuation.resume(null)
-                        }
-                    } finally {
-                        img?.close()
+        // If not cached yet (e.g. at immediate startup), wait up to 500ms for a frame
+        var attempts = 0
+        while (attempts < 10) {
+            delay(50)
+            synchronized(bitmapLock) {
+                lastFrameBitmap?.let { cached ->
+                    if (!cached.isRecycled) {
+                        return@withContext cached.copy(Bitmap.Config.ARGB_8888, true)
                     }
                 }
-            }, handler)
-
-            // Timeout after 1.5 seconds if no frame arrives
-            handler.postDelayed({
-                if (!isHandled) {
-                    isHandled = true
-                    reader.setOnImageAvailableListener(null, null)
-                    continuation.resume(null)
-                }
-            }, 1500)
+            }
+            attempts++
         }
+
+        Log.w(TAG, "Screen capture timed out waiting for initial frame")
+        return@withContext null
     }
 
     private fun imageToBitmap(image: Image, width: Int, height: Int): Bitmap {
         val plane = image.planes[0]
         val buffer = plane.buffer
+        buffer.rewind() // Always rewind buffer before copying
+
         val pixelStride = plane.pixelStride
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * width
@@ -191,6 +195,10 @@ class ScreenCaptureHelper(
             virtualDisplay = null
             imageReader?.close()
             imageReader = null
+            synchronized(bitmapLock) {
+                lastFrameBitmap?.recycle()
+                lastFrameBitmap = null
+            }
             mediaProjection.unregisterCallback(projectionCallback)
             mediaProjection.stop()
         } catch (e: Exception) {

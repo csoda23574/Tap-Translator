@@ -19,7 +19,6 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.taptranslator.app.MainActivity
-import com.taptranslator.app.R
 import com.taptranslator.app.TapTranslatorApp
 import com.taptranslator.app.capture.ScreenCaptureHelper
 import com.taptranslator.app.data.model.LanguageOption
@@ -176,7 +175,7 @@ class FloatingOverlayService : Service() {
         )
 
         try {
-            windowManager.addView(floatingButtonView, floatingButtonView?.layoutParams)
+            windowManager.addView(floatingButtonView, floatingButtonView?.windowLayoutParams)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add floating button view", e)
         }
@@ -188,38 +187,37 @@ class FloatingOverlayService : Service() {
 
         dismissResultOverlay()
 
-        // 1. Immediately provide visual feedback with spinner on the floating button
+        // 1. Immediately switch button to loading spinner
         floatingButtonView?.setLoading(true)
 
         serviceScope.launch {
             try {
-                // Briefly make button transparent to not capture itself in screenshot
+                // Briefly hide button for screenshot frame
                 floatingButtonView?.alpha = 0f
                 delay(30)
 
                 val bitmap: Bitmap? = try {
                     screenCaptureHelper?.captureScreen()
                 } finally {
-                    // Always restore button opacity immediately after capture
                     floatingButtonView?.alpha = 1f
                 }
 
                 if (bitmap == null) {
-                    Toast.makeText(this@FloatingOverlayService, "화면 캡처 대기 중입니다. 다시 시도해주세요.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@FloatingOverlayService, "화면 캡처를 준비 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
 
-                // 2. OCR Text extraction
+                // 2. OCR Text extraction with multi-language fallback
                 val sourceLang = prefs.sourceLanguage
-                val scriptType = LanguageOption.SUPPORTED_SOURCE.firstOrNull { it.code == sourceLang }?.scriptType
+                val preferredScript = LanguageOption.SUPPORTED_SOURCE.firstOrNull { it.code == sourceLang }?.scriptType
                     ?: ScriptType.LATIN
 
                 val recognizedBlocks = withContext(Dispatchers.Default) {
-                    ocrEngine.recognizeText(bitmap, scriptType)
+                    ocrEngine.recognizeText(bitmap, preferredScript)
                 }
 
                 if (recognizedBlocks.isEmpty()) {
-                    Toast.makeText(this@FloatingOverlayService, "인식된 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@FloatingOverlayService, "화면에서 인식된 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
 
@@ -228,7 +226,7 @@ class FloatingOverlayService : Service() {
                 if (apiKey.isBlank()) {
                     Toast.makeText(
                         this@FloatingOverlayService,
-                        "Gemini API 키를 먼저 입력해주세요.",
+                        "Gemini API 키가 설정되지 않았습니다. 앱 설정에서 키를 등록해주세요.",
                         Toast.LENGTH_LONG
                     ).show()
                     return@launch
@@ -254,7 +252,7 @@ class FloatingOverlayService : Service() {
                 Log.e(TAG, "Translation error", e)
                 Toast.makeText(
                     this@FloatingOverlayService,
-                    "번역 중 오류: ${e.message}",
+                    "번역 오류: ${e.message}",
                     Toast.LENGTH_LONG
                 ).show()
             } finally {
@@ -283,8 +281,9 @@ class FloatingOverlayService : Service() {
         )
 
         try {
-            windowManager.addView(overlay, overlay.layoutParams)
+            windowManager.addView(overlay, overlay.windowLayoutParams)
             currentResultOverlay = overlay
+            Toast.makeText(this, "${blocks.size}개 문장 번역 완료!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed adding ResultOverlayView", e)
         }

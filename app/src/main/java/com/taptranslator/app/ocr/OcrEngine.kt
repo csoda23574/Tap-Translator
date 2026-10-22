@@ -49,6 +49,31 @@ class OcrEngine {
 
     suspend fun recognizeText(
         bitmap: Bitmap,
+        preferredScript: ScriptType
+    ): List<RecognizedBlock> {
+        // 1. Try preferred script first
+        val primaryBlocks = tryRecognize(bitmap, preferredScript)
+        if (primaryBlocks.isNotEmpty()) {
+            return primaryBlocks
+        }
+
+        // 2. Fallback to other language recognizers so text is never missed
+        val fallbackScripts = listOf(ScriptType.KOREAN, ScriptType.LATIN, ScriptType.JAPANESE, ScriptType.CHINESE)
+            .filter { it != preferredScript }
+
+        for (script in fallbackScripts) {
+            val fallbackBlocks = tryRecognize(bitmap, script)
+            if (fallbackBlocks.isNotEmpty()) {
+                Log.d(TAG, "Fallback recognizer ($script) found ${fallbackBlocks.size} blocks")
+                return fallbackBlocks
+            }
+        }
+
+        return emptyList()
+    }
+
+    private suspend fun tryRecognize(
+        bitmap: Bitmap,
         scriptType: ScriptType
     ): List<RecognizedBlock> = suspendCancellableCoroutine { continuation ->
         try {
@@ -64,7 +89,6 @@ class OcrEngine {
                         val rawText = block.text.trim()
                         val boundingBox = block.boundingBox ?: Rect(0, 0, 0, 0)
 
-                        // Filter out trivial noise or single symbols
                         if (rawText.isNotEmpty() && boundingBox.width() > 10 && boundingBox.height() > 10) {
                             blocks.add(
                                 RecognizedBlock(
@@ -75,15 +99,15 @@ class OcrEngine {
                             )
                         }
                     }
-                    Log.d(TAG, "Recognized ${blocks.size} text blocks using $scriptType")
                     continuation.resume(blocks)
                 }
                 .addOnFailureListener { exception ->
-                    Log.e(TAG, "OCR recognition failed: ${exception.message}", exception)
-                    continuation.resumeWithException(exception)
+                    Log.w(TAG, "OCR attempt on $scriptType failed: ${exception.message}")
+                    continuation.resume(emptyList()) // Resume with empty to allow fallback
                 }
         } catch (e: Exception) {
-            continuation.resumeWithException(e)
+            Log.w(TAG, "OCR exception on $scriptType: ${e.message}")
+            continuation.resume(emptyList())
         }
     }
 

@@ -15,7 +15,6 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.ProgressBar
-import com.taptranslator.app.R
 import kotlin.math.abs
 
 class FloatingButtonView(
@@ -25,9 +24,10 @@ class FloatingButtonView(
 ) : FrameLayout(context) {
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    val layoutParams: WindowManager.LayoutParams
+    val windowLayoutParams: WindowManager.LayoutParams
 
-    private val buttonSize = (56 * resources.displayMetrics.density).toInt()
+    // Reduced by 15% from 56dp to 48dp
+    private val buttonSize = (48 * resources.displayMetrics.density).toInt()
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
@@ -45,7 +45,7 @@ class FloatingButtonView(
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        layoutParams = WindowManager.LayoutParams(
+        windowLayoutParams = WindowManager.LayoutParams(
             buttonSize,
             buttonSize,
             windowType,
@@ -54,24 +54,24 @@ class FloatingButtonView(
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 20
-            y = 300
+            x = 16
+            y = 350
         }
 
         // Circular background with elevated shadow
         val bgDrawable = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#1E88E5")) // Vibrant Material Blue
+            setColor(Color.parseColor("#1E88E5"))
             setStroke((2 * resources.displayMetrics.density).toInt(), Color.WHITE)
         }
         background = bgDrawable
-        elevation = 12 * resources.displayMetrics.density
+        elevation = 10 * resources.displayMetrics.density
 
         // Icon inside button
         iconView = ImageView(context).apply {
-            setImageResource(android.R.drawable.ic_menu_search) // Default icon, can be styled
+            setImageResource(android.R.drawable.ic_menu_search)
             setColorFilter(Color.WHITE)
-            val padding = (14 * resources.displayMetrics.density).toInt()
+            val padding = (11 * resources.displayMetrics.density).toInt()
             setPadding(padding, padding, padding, padding)
             layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         }
@@ -79,7 +79,7 @@ class FloatingButtonView(
 
         // Loading spinner inside button
         progressBar = ProgressBar(context).apply {
-            val pSize = (32 * resources.displayMetrics.density).toInt()
+            val pSize = (24 * resources.displayMetrics.density).toInt()
             layoutParams = LayoutParams(pSize, pSize).apply {
                 gravity = Gravity.CENTER
             }
@@ -105,8 +105,8 @@ class FloatingButtonView(
         setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    initialX = layoutParams.x
-                    initialY = layoutParams.y
+                    initialX = windowLayoutParams.x
+                    initialY = windowLayoutParams.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     isDragging = false
@@ -121,10 +121,10 @@ class FloatingButtonView(
                     }
 
                     if (isDragging) {
-                        layoutParams.x = initialX + dx
-                        layoutParams.y = initialY + dy
+                        windowLayoutParams.x = initialX + dx
+                        windowLayoutParams.y = initialY + dy
                         try {
-                            windowManager.updateViewLayout(this, layoutParams)
+                            windowManager.updateViewLayout(this, windowLayoutParams)
                         } catch (e: Exception) {
                             // Ignored if view is detached
                         }
@@ -133,10 +133,8 @@ class FloatingButtonView(
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
-                        // Click event
                         onTranslateClick()
                     } else {
-                        // Snap to nearest edge (left or right)
                         snapToEdge()
                     }
                     true
@@ -152,20 +150,20 @@ class FloatingButtonView(
         windowManager.defaultDisplay.getMetrics(displayMetrics)
         val screenWidth = displayMetrics.widthPixels
 
-        val currentX = layoutParams.x
+        val currentX = windowLayoutParams.x
         val targetX = if (currentX + buttonSize / 2 < screenWidth / 2) {
-            16 // Snap to left with margin
+            12 // Snap to left with margin
         } else {
-            screenWidth - buttonSize - 16 // Snap to right with margin
+            screenWidth - buttonSize - 12 // Snap to right with margin
         }
 
         val animator = ValueAnimator.ofInt(currentX, targetX).apply {
-            duration = 200
+            duration = 180
             interpolator = DecelerateInterpolator()
             addUpdateListener { animation ->
-                layoutParams.x = animation.animatedValue as Int
+                windowLayoutParams.x = animation.animatedValue as Int
                 try {
-                    windowManager.updateViewLayout(this@FloatingButtonView, layoutParams)
+                    windowManager.updateViewLayout(this@FloatingButtonView, windowLayoutParams)
                 } catch (e: Exception) {
                     // Ignored
                 }

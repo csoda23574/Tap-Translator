@@ -10,7 +10,6 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -31,7 +30,7 @@ class ResultOverlayView(
     private val onDismiss: () -> Unit
 ) : FrameLayout(context) {
 
-    val layoutParams: WindowManager.LayoutParams
+    val windowLayoutParams: WindowManager.LayoutParams
 
     init {
         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -41,7 +40,7 @@ class ResultOverlayView(
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        layoutParams = WindowManager.LayoutParams(
+        windowLayoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             windowType,
@@ -107,9 +106,7 @@ class ResultOverlayView(
             }
 
             val r = block.rect
-            // Ensure minimum dimensions
             val boxWidth = (r.width().coerceAtLeast((70 * density).toInt()))
-            val boxHeight = (r.height().coerceAtLeast((28 * density).toInt()))
 
             val boxParams = LayoutParams(boxWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.TOP or Gravity.START
@@ -132,8 +129,8 @@ class ResultOverlayView(
             val bg = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadii = floatArrayOf(
-                    20 * density, 20 * density, // Top-left
-                    20 * density, 20 * density, // Top-right
+                    20 * density, 20 * density,
+                    20 * density, 20 * density,
                     0f, 0f, 0f, 0f
                 )
                 setColor(Color.parseColor("#1E1E24"))
