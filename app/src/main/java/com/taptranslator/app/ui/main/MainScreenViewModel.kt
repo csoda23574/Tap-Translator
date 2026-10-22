@@ -8,6 +8,7 @@ import com.taptranslator.app.data.model.TranslationTone
 import com.taptranslator.app.data.preference.PreferencesManager
 import com.taptranslator.app.service.FloatingOverlayService
 import com.taptranslator.app.translation.GeminiTranslator
+import com.taptranslator.app.util.AppLogger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +49,7 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
         )
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+    val logs: StateFlow<String> = AppLogger.logsFlow
 
     init {
         // Automatically check and sync latest Flash model if API key is present
@@ -166,5 +168,13 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 }
             )
         }
+    }
+
+    fun clearLogs() {
+        AppLogger.clearLogs()
+    }
+
+    fun getFullLogs(): String {
+        return AppLogger.getFullLogs()
     }
 }

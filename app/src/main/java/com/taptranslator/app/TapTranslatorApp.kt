@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.taptranslator.app.util.AppLogger
 
 class TapTranslatorApp : Application() {
 
@@ -17,6 +18,8 @@ class TapTranslatorApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLogger.init(this)
+        AppLogger.i("App", "Application onCreate: TapTranslatorApp initialized")
         createNotificationChannel()
     }
 

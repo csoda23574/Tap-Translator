@@ -30,6 +30,7 @@ import com.taptranslator.app.ocr.OcrEngine
 import com.taptranslator.app.translation.GeminiTranslator
 import com.taptranslator.app.ui.overlay.FloatingButtonView
 import com.taptranslator.app.ui.overlay.ResultOverlayView
+import com.taptranslator.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -74,6 +75,7 @@ class FloatingOverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLogger.i(TAG, "FloatingOverlayService onCreate")
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         prefs = PreferencesManager.getInstance(this)
         ocrEngine = OcrEngine()
@@ -83,6 +85,7 @@ class FloatingOverlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) return START_NOT_STICKY
 
+        AppLogger.i(TAG, "onStartCommand action=${intent.action}")
         when (intent.action) {
             ACTION_START -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
@@ -94,17 +97,19 @@ class FloatingOverlayService : Service() {
                 }
 
                 if (resultCode != 0 && resultData != null) {
+                    AppLogger.i(TAG, "MediaProjection data valid. Starting service...")
                     startAsForegroundService()
                     setupMediaProjection(resultCode, resultData)
                     setupFloatingButton()
                     isRunning = true
                     prefs.isServiceRunning = true
                 } else {
-                    Log.e(TAG, "Missing MediaProjection permission data")
+                    AppLogger.e(TAG, "Missing MediaProjection permission data (code=$resultCode, data=${resultData != null})")
                     stopSelf()
                 }
             }
             ACTION_STOP -> {
+                AppLogger.i(TAG, "Received ACTION_STOP")
                 stopForegroundService()
             }
         }
@@ -163,28 +168,38 @@ class FloatingOverlayService : Service() {
     }
 
     private fun setupFloatingButton() {
-        if (floatingButtonView != null) return
+        if (floatingButtonView != null) {
+            AppLogger.d(TAG, "Floating button already exists")
+            return
+        }
 
+        AppLogger.i(TAG, "Creating FloatingButtonView...")
         floatingButtonView = FloatingButtonView(
             context = this,
             onTranslateClick = {
                 handleTranslateClick()
             },
             onLongClickClose = {
+                AppLogger.i(TAG, "FloatingButtonView long-clicked, stopping service")
                 stopForegroundService()
             }
         )
 
         try {
             windowManager.addView(floatingButtonView, floatingButtonView?.windowLayoutParams)
+            AppLogger.i(TAG, "FloatingButtonView added to WindowManager successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to add floating button view", e)
+            AppLogger.e(TAG, "Failed to add floating button view to WindowManager", e)
         }
     }
 
     private fun handleTranslateClick() {
-        if (isProcessing) return
+        if (isProcessing) {
+            AppLogger.w(TAG, "handleTranslateClick ignored: already processing")
+            return
+        }
         isProcessing = true
+        AppLogger.i(TAG, "=== Translate button clicked ===")
 
         dismissResultOverlay()
 
@@ -195,9 +210,11 @@ class FloatingOverlayService : Service() {
             try {
                 // Briefly hide button for screenshot frame
                 floatingButtonView?.alpha = 0f
-                delay(30)
+                delay(40)
 
-                if (screenCaptureHelper?.isProjectionAlive != true) {
+                val helper = screenCaptureHelper
+                if (helper == null || !helper.isProjectionAlive) {
+                    AppLogger.e(TAG, "Screen capture projection is dead or null (helper=$helper)")
                     Toast.makeText(
                         this@FloatingOverlayService,
                         "화면 캡처 권한이 만료되었습니다. 앱에서 번역기를 다시 시작해주세요.",
@@ -206,34 +223,41 @@ class FloatingOverlayService : Service() {
                     return@launch
                 }
 
+                AppLogger.d(TAG, "Requesting screen capture bitmap...")
                 val bitmap: Bitmap? = try {
-                    screenCaptureHelper?.captureScreen()
+                    helper.captureScreen()
                 } finally {
                     floatingButtonView?.alpha = 1f
                 }
 
                 if (bitmap == null) {
+                    AppLogger.w(TAG, "Screen capture returned null bitmap")
                     Toast.makeText(this@FloatingOverlayService, "화면 캡처 대기 중입니다. 잠시 후 다시 눌러주세요.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
+                AppLogger.i(TAG, "Screen capture succeeded: ${bitmap.width}x${bitmap.height}, config=${bitmap.config}")
 
                 // 2. OCR Text extraction with multi-language fallback
                 val sourceLang = prefs.sourceLanguage
                 val preferredScript = LanguageOption.SUPPORTED_SOURCE.firstOrNull { it.code == sourceLang }?.scriptType
                     ?: ScriptType.LATIN
 
+                AppLogger.i(TAG, "Starting OCR processing (preferredScript=$preferredScript, sourceLang=$sourceLang)...")
                 val recognizedBlocks = withContext(Dispatchers.Default) {
                     ocrEngine.recognizeText(bitmap, preferredScript)
                 }
 
                 if (recognizedBlocks.isEmpty()) {
+                    AppLogger.w(TAG, "OCR found 0 text blocks on the captured screen")
                     Toast.makeText(this@FloatingOverlayService, "화면에서 인식된 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
+                AppLogger.i(TAG, "OCR extracted ${recognizedBlocks.size} blocks successfully")
 
                 // 3. Gemini Translation
                 val apiKey = prefs.apiKey
                 if (apiKey.isBlank()) {
+                    AppLogger.e(TAG, "Gemini API key is blank in preferences")
                     Toast.makeText(
                         this@FloatingOverlayService,
                         "Gemini API 키가 설정되지 않았습니다. 앱 설정에서 키를 먼저 등록해주세요.",
@@ -245,6 +269,7 @@ class FloatingOverlayService : Service() {
                 val targetLang = prefs.targetLanguage
                 val tone = prefs.translationTone
                 val model = prefs.selectedModel
+                AppLogger.i(TAG, "Requesting Gemini translation: model=$model, $sourceLang -> $targetLang, tone=${tone.name}")
 
                 val translatedBlocks = geminiTranslator.translateBlocks(
                     blocks = recognizedBlocks,
@@ -254,12 +279,13 @@ class FloatingOverlayService : Service() {
                     targetLang = targetLang,
                     tone = tone
                 )
+                AppLogger.i(TAG, "Gemini translation returned ${translatedBlocks.size} blocks")
 
                 // 4. Display Result Overlay
                 showResultOverlay(translatedBlocks)
 
             } catch (e: Exception) {
-                Log.e(TAG, "Translation error", e)
+                AppLogger.e(TAG, "Translation workflow error: ${e.message}", e)
                 Toast.makeText(
                     this@FloatingOverlayService,
                     "번역 오류: ${e.message}",
@@ -270,6 +296,7 @@ class FloatingOverlayService : Service() {
                 floatingButtonView?.visibility = View.VISIBLE
                 floatingButtonView?.setLoading(false)
                 isProcessing = false
+                AppLogger.d(TAG, "=== Translate workflow completed (isProcessing reset) ===")
             }
         }
     }
@@ -277,7 +304,11 @@ class FloatingOverlayService : Service() {
     private fun showResultOverlay(blocks: List<RecognizedBlock>) {
         dismissResultOverlay()
 
-        if (!Settings.canDrawOverlays(this)) {
+        val canDraw = Settings.canDrawOverlays(this)
+        AppLogger.d(TAG, "showResultOverlay: canDrawOverlays=$canDraw, blocks=${blocks.size}")
+
+        if (!canDraw) {
+            AppLogger.e(TAG, "Overlay permission not granted!")
             Toast.makeText(this, "다른 앱 위에 그리기 권한이 필요합니다.", Toast.LENGTH_LONG).show()
             return
         }
@@ -291,6 +322,7 @@ class FloatingOverlayService : Service() {
             displayMode = displayMode,
             bgAlpha = alpha,
             onDismiss = {
+                AppLogger.d(TAG, "ResultOverlayView dismiss callback invoked")
                 dismissResultOverlay()
             }
         )
@@ -298,9 +330,10 @@ class FloatingOverlayService : Service() {
         try {
             windowManager.addView(overlay, overlay.windowLayoutParams)
             currentResultOverlay = overlay
+            AppLogger.i(TAG, "ResultOverlayView added successfully to WindowManager (${blocks.size} blocks)")
             Toast.makeText(this, "⚡ ${blocks.size}개 문장 번역 완료!", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed adding ResultOverlayView", e)
+            AppLogger.e(TAG, "Failed adding ResultOverlayView to WindowManager", e)
             Toast.makeText(this, "오버레이 표시 실패: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -309,21 +342,24 @@ class FloatingOverlayService : Service() {
         currentResultOverlay?.let { overlay ->
             try {
                 windowManager.removeView(overlay)
+                AppLogger.d(TAG, "ResultOverlayView removed")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed removing ResultOverlayView", e)
+                AppLogger.w(TAG, "Failed removing ResultOverlayView: ${e.message}")
             }
             currentResultOverlay = null
         }
     }
 
     private fun stopForegroundService() {
+        AppLogger.i(TAG, "stopForegroundService called")
         dismissResultOverlay()
 
         floatingButtonView?.let { button ->
             try {
                 windowManager.removeView(button)
+                AppLogger.d(TAG, "FloatingButtonView removed")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed removing floating button", e)
+                AppLogger.w(TAG, "Failed removing floating button: ${e.message}")
             }
             floatingButtonView = null
         }

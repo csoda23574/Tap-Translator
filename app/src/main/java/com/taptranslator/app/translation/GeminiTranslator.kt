@@ -3,6 +3,7 @@ package com.taptranslator.app.translation
 import android.util.Log
 import com.taptranslator.app.data.model.RecognizedBlock
 import com.taptranslator.app.data.model.TranslationTone
+import com.taptranslator.app.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -35,11 +36,12 @@ class GeminiTranslator {
     suspend fun fetchLatestFlashModel(apiKey: String): String? = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) return@withContext null
         try {
+            AppLogger.d(TAG, "fetchLatestFlashModel: Querying available models...")
             val url = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
             val request = Request.Builder().url(url).get().build()
             val response = httpClient.newCall(request).execute()
             if (!response.isSuccessful) {
-                Log.w(TAG, "fetchLatestFlashModel failed: HTTP ${response.code}")
+                AppLogger.w(TAG, "fetchLatestFlashModel failed: HTTP ${response.code}")
                 return@withContext null
             }
 
@@ -73,7 +75,10 @@ class GeminiTranslator {
                 }
             }
 
-            if (candidateModels.isEmpty()) return@withContext null
+            if (candidateModels.isEmpty()) {
+                AppLogger.w(TAG, "fetchLatestFlashModel: No matching Flash model candidates found")
+                return@withContext null
+            }
 
             // Sort by version descending (e.g. 3.8 > 2.5 > 2.0 > 1.5)
             val sorted = candidateModels.sortedWith { m1, m2 ->
@@ -83,10 +88,10 @@ class GeminiTranslator {
             }
 
             val latest = sorted.firstOrNull()
-            Log.d(TAG, "Auto-detected latest Flash model: $latest (from candidates: $candidateModels)")
+            AppLogger.i(TAG, "Auto-detected latest Flash model: $latest (candidates: $candidateModels)")
             return@withContext latest
         } catch (e: Exception) {
-            Log.e(TAG, "Error fetching latest Flash model", e)
+            AppLogger.e(TAG, "Error fetching latest Flash model: ${e.message}", e)
             return@withContext null
         }
     }
@@ -100,27 +105,37 @@ class GeminiTranslator {
     suspend fun testApiKey(apiKey: String, model: String = "gemini-3.8-flash"): Result<String> = withContext(Dispatchers.IO) {
         try {
             if (apiKey.isBlank()) {
+                AppLogger.w(TAG, "testApiKey failed: API key is blank")
                 return@withContext Result.failure(IllegalArgumentException("API 키가 비어있습니다."))
             }
 
-            // Attempt test call
+            AppLogger.i(TAG, "testApiKey starting for model=$model")
             var targetModel = model
             var result = executeTestCall(apiKey, targetModel)
 
             // If the model had high demand / temporary failure, test with fallback model
             if (result.isFailure && result.exceptionOrNull()?.message?.contains("high demand", ignoreCase = true) == true) {
                 if (targetModel != FALLBACK_STABLE_MODEL) {
+                    AppLogger.w(TAG, "testApiKey: $model high demand, falling back to $FALLBACK_STABLE_MODEL")
                     targetModel = FALLBACK_STABLE_MODEL
                     result = executeTestCall(apiKey, targetModel)
                     if (result.isSuccess) {
-                        return@withContext Result.success("연결 성공! ($model 부하 시 $FALLBACK_STABLE_MODEL 로 자동 전환)")
+                        val msg = "연결 성공! ($model 부하 시 $FALLBACK_STABLE_MODEL 로 자동 전환)"
+                        AppLogger.i(TAG, "testApiKey fallback success: $msg")
+                        return@withContext Result.success(msg)
                     }
                 }
             }
 
+            if (result.isSuccess) {
+                AppLogger.i(TAG, "testApiKey success: ${result.getOrNull()}")
+            } else {
+                AppLogger.e(TAG, "testApiKey failed: ${result.exceptionOrNull()?.message}")
+            }
+
             result
         } catch (e: Exception) {
-            Log.e(TAG, "Test API key failed", e)
+            AppLogger.e(TAG, "Test API key unexpected failure: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -154,6 +169,7 @@ class GeminiTranslator {
             } catch (e: Exception) {
                 "HTTP ${response.code}: $body"
             }
+            AppLogger.w(TAG, "executeTestCall failed HTTP ${response.code}: $errorMsg")
             return Result.failure(Exception(errorMsg))
         }
 
@@ -168,29 +184,46 @@ class GeminiTranslator {
         targetLang: String,
         tone: TranslationTone
     ): List<RecognizedBlock> = withContext(Dispatchers.IO) {
-        if (blocks.isEmpty()) return@withContext emptyList()
-        if (apiKey.isBlank()) throw IllegalArgumentException("Gemini API 키를 설정해주세요.")
+        if (blocks.isEmpty()) {
+            AppLogger.d(TAG, "translateBlocks: 0 blocks to translate")
+            return@withContext emptyList()
+        }
+        if (apiKey.isBlank()) {
+            AppLogger.e(TAG, "translateBlocks: API key is blank")
+            throw IllegalArgumentException("Gemini API 키를 설정해주세요.")
+        }
+
+        AppLogger.i(TAG, "translateBlocks start: ${blocks.size} blocks, model=$model, $sourceLang -> $targetLang, tone=${tone.name}")
+        val sampleText = blocks.firstOrNull()?.originalText?.take(60)?.replace("\n", " ")
+        AppLogger.d(TAG, "Sample block 0 [${blocks.firstOrNull()?.rect}]: \"$sampleText\"")
 
         // First attempt with requested model
         try {
-            return@withContext executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
+            val res = executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
+            AppLogger.i(TAG, "translateBlocks completed successfully: ${res.size} blocks translated")
+            return@withContext res
         } catch (e: Exception) {
             val isHighDemand = e.message?.contains("high demand", ignoreCase = true) == true ||
                     e.message?.contains("503", ignoreCase = true) == true
 
             if (isHighDemand) {
-                Log.w(TAG, "Model $model high demand, retrying once after delay...")
+                AppLogger.w(TAG, "Model $model high demand, retrying once after delay...")
                 delay(1000)
                 try {
-                    return@withContext executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
+                    val res = executeTranslateCall(blocks, apiKey, model, sourceLang, targetLang, tone)
+                    AppLogger.i(TAG, "translateBlocks retry succeeded with model $model")
+                    return@withContext res
                 } catch (retryEx: Exception) {
-                    Log.w(TAG, "Retry on $model failed, falling back to $FALLBACK_STABLE_MODEL", retryEx)
+                    AppLogger.w(TAG, "Retry on $model failed, falling back to $FALLBACK_STABLE_MODEL: ${retryEx.message}")
                     if (model != FALLBACK_STABLE_MODEL) {
-                        return@withContext executeTranslateCall(blocks, apiKey, FALLBACK_STABLE_MODEL, sourceLang, targetLang, tone)
+                        val fallbackRes = executeTranslateCall(blocks, apiKey, FALLBACK_STABLE_MODEL, sourceLang, targetLang, tone)
+                        AppLogger.i(TAG, "translateBlocks fallback to $FALLBACK_STABLE_MODEL succeeded")
+                        return@withContext fallbackRes
                     }
                     throw retryEx
                 }
             }
+            AppLogger.e(TAG, "translateBlocks error: ${e.message}", e)
             throw e
         }
     }
@@ -243,6 +276,7 @@ class GeminiTranslator {
             })
         }
 
+        AppLogger.d(TAG, "Sending Gemini request to model=$model (payload length: ${requestJson.toString().length})")
         val request = Request.Builder()
             .url(url)
             .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
@@ -250,6 +284,7 @@ class GeminiTranslator {
 
         val response = httpClient.newCall(request).execute()
         val body = response.body?.string().orEmpty()
+        AppLogger.d(TAG, "Gemini HTTP response code: ${response.code}, body size: ${body.length}")
 
         if (!response.isSuccessful) {
             val errorMsg = try {
@@ -258,6 +293,7 @@ class GeminiTranslator {
             } catch (e: Exception) {
                 "HTTP ${response.code}: $body"
             }
+            AppLogger.e(TAG, "Gemini API error (HTTP ${response.code}): $errorMsg")
             throw Exception(errorMsg)
         }
 
@@ -266,13 +302,28 @@ class GeminiTranslator {
 
     private fun parseTranslationResponse(responseBody: String, originalBlocks: List<RecognizedBlock>): List<RecognizedBlock> {
         val root = JSONObject(responseBody)
-        val candidates = root.optJSONArray("candidates") ?: return originalBlocks
-        if (candidates.length() == 0) return originalBlocks
+        val candidates = root.optJSONArray("candidates") ?: run {
+            AppLogger.w(TAG, "parseTranslationResponse: No candidates in response")
+            return originalBlocks
+        }
+        if (candidates.length() == 0) {
+            AppLogger.w(TAG, "parseTranslationResponse: candidates array is empty")
+            return originalBlocks
+        }
 
         val firstCandidate = candidates.getJSONObject(0)
-        val content = firstCandidate.optJSONObject("content") ?: return originalBlocks
-        val parts = content.optJSONArray("parts") ?: return originalBlocks
-        if (parts.length() == 0) return originalBlocks
+        val content = firstCandidate.optJSONObject("content") ?: run {
+            AppLogger.w(TAG, "parseTranslationResponse: No content in candidate[0]")
+            return originalBlocks
+        }
+        val parts = content.optJSONArray("parts") ?: run {
+            AppLogger.w(TAG, "parseTranslationResponse: No parts in candidate[0].content")
+            return originalBlocks
+        }
+        if (parts.length() == 0) {
+            AppLogger.w(TAG, "parseTranslationResponse: parts array is empty")
+            return originalBlocks
+        }
 
         var jsonText = parts.getJSONObject(0).optString("text", "").trim()
 
@@ -296,8 +347,9 @@ class GeminiTranslator {
                     translationMap[id] = translation
                 }
             }
+            AppLogger.d(TAG, "Successfully parsed JSON with ${translationMap.size} translation entries")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse translation JSON: $jsonText", e)
+            AppLogger.e(TAG, "Failed to parse translation JSON: ${jsonText.take(200)}", e)
         }
 
         return originalBlocks.map { block ->

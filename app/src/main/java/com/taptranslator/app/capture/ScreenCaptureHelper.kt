@@ -12,8 +12,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
-import android.util.Log
 import android.view.WindowManager
+import com.taptranslator.app.util.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -25,7 +25,7 @@ class ScreenCaptureHelper(
 ) {
 
     companion object {
-        private const val TAG = "ScreenCaptureHelper"
+        private const val TAG = "ScreenCapture"
     }
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -48,7 +48,7 @@ class ScreenCaptureHelper(
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            Log.w(TAG, "MediaProjection stopped by system")
+            AppLogger.w(TAG, "MediaProjection.Callback onStop() invoked by Android system")
             isProjectionAlive = false
             release()
         }
@@ -57,8 +57,9 @@ class ScreenCaptureHelper(
     init {
         try {
             mediaProjection.registerCallback(projectionCallback, handler)
+            AppLogger.i(TAG, "MediaProjection callback successfully registered")
         } catch (e: Exception) {
-            Log.e(TAG, "Error registering MediaProjection callback", e)
+            AppLogger.e(TAG, "Failed registering MediaProjection callback", e)
         }
         updateScreenDimensions()
         initVirtualDisplay()
@@ -83,10 +84,14 @@ class ScreenCaptureHelper(
         if (screenWidth <= 0) screenWidth = 1080
         if (screenHeight <= 0) screenHeight = 2400
         if (screenDensity <= 0) screenDensity = 420
+        AppLogger.d(TAG, "Screen dimensions: ${screenWidth}x${screenHeight}, density=$screenDensity")
     }
 
     private fun initVirtualDisplay() {
-        if (!isProjectionAlive) return
+        if (!isProjectionAlive) {
+            AppLogger.w(TAG, "initVirtualDisplay: projection is not alive")
+            return
+        }
         try {
             updateScreenDimensions()
 
@@ -97,7 +102,6 @@ class ScreenCaptureHelper(
                 2
             )
 
-            // Continuously drain and cache the latest screen frame
             reader.setOnImageAvailableListener({ ir ->
                 var img: Image? = null
                 try {
@@ -112,7 +116,7 @@ class ScreenCaptureHelper(
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in onImageAvailable: ${e.message}", e)
+                    AppLogger.e(TAG, "Error in onImageAvailable: ${e.message}", e)
                 } finally {
                     img?.close()
                 }
@@ -130,33 +134,36 @@ class ScreenCaptureHelper(
                 null,
                 handler
             )
-            Log.d(TAG, "VirtualDisplay created: $screenWidth x $screenHeight, density=$screenDensity")
+            AppLogger.i(TAG, "VirtualDisplay created: $screenWidth x $screenHeight, density=$screenDensity, readerSurface=${reader.surface}")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed creating VirtualDisplay", e)
+            AppLogger.e(TAG, "Failed creating VirtualDisplay", e)
         }
     }
 
     suspend fun captureScreen(): Bitmap? = withContext(Dispatchers.Default) {
+        AppLogger.i(TAG, "captureScreen() called. isProjectionAlive=$isProjectionAlive")
         if (!isProjectionAlive) {
-            Log.w(TAG, "Capture called but projection is not alive")
+            AppLogger.e(TAG, "Capture failed: MediaProjection is dead/stopped by system")
             return@withContext null
         }
 
-        // 1. Check if cached frame is ready
+        // 1. Return cached frame if available
         synchronized(bitmapLock) {
             lastFrameBitmap?.let { cached ->
                 if (!cached.isRecycled) {
+                    AppLogger.d(TAG, "Returning cached frame bitmap: ${cached.width}x${cached.height}")
                     return@withContext cached.copy(Bitmap.Config.ARGB_8888, true)
                 }
             }
         }
 
-        // 2. Try direct acquire from ImageReader
+        // 2. Direct acquire attempt
         try {
             val reader = imageReader
             val directImage = reader?.acquireLatestImage()
             if (directImage != null) {
                 try {
+                    AppLogger.d(TAG, "Acquired direct image from reader: ${directImage.width}x${directImage.height}")
                     val bmp = imageToBitmap(directImage, screenWidth, screenHeight)
                     if (bmp != null) {
                         return@withContext bmp
@@ -166,16 +173,18 @@ class ScreenCaptureHelper(
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct image acquire attempt: ${e.message}")
+            AppLogger.w(TAG, "Direct image acquire attempt failed: ${e.message}")
         }
 
-        // 3. Wait up to 800ms for a frame
+        // 3. Wait up to 1000ms for a frame to arrive
+        AppLogger.d(TAG, "Waiting for screen frame...")
         var attempts = 0
-        while (attempts < 16) {
+        while (attempts < 20) {
             delay(50)
             synchronized(bitmapLock) {
                 lastFrameBitmap?.let { cached ->
                     if (!cached.isRecycled) {
+                        AppLogger.i(TAG, "Frame arrived at attempt $attempts: ${cached.width}x${cached.height}")
                         return@withContext cached.copy(Bitmap.Config.ARGB_8888, true)
                     }
                 }
@@ -183,7 +192,7 @@ class ScreenCaptureHelper(
             attempts++
         }
 
-        Log.w(TAG, "Screen capture timed out after 800ms")
+        AppLogger.e(TAG, "Screen capture TIMED OUT after 1000ms! No frame received.")
         return@withContext null
     }
 
@@ -200,7 +209,6 @@ class ScreenCaptureHelper(
             val bitmapWidth = width + rowPadding / pixelStride
             val requiredBytes = bitmapWidth * height * 4
 
-            // Fix the notorious "Buffer not large enough for pixels" Android GPU padding bug
             val safeBuffer: ByteBuffer = if (buffer.remaining() < requiredBytes) {
                 val newBuffer = ByteBuffer.allocateDirect(requiredBytes)
                 buffer.rewind()
@@ -226,12 +234,13 @@ class ScreenCaptureHelper(
                 cropped
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Error in imageToBitmap: ${e.message}", e)
+            AppLogger.e(TAG, "imageToBitmap failed: ${e.message}", e)
             null
         }
     }
 
     fun release() {
+        AppLogger.i(TAG, "Releasing ScreenCaptureHelper resources")
         try {
             imageReader?.setOnImageAvailableListener(null, null)
             virtualDisplay?.release()
@@ -243,7 +252,7 @@ class ScreenCaptureHelper(
                 lastFrameBitmap = null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing ScreenCaptureHelper", e)
+            AppLogger.e(TAG, "Error releasing ScreenCaptureHelper", e)
         }
     }
 }

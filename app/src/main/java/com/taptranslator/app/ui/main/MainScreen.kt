@@ -1,6 +1,8 @@
 package com.taptranslator.app.ui.main
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
@@ -25,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -45,6 +48,7 @@ fun MainScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val logs by viewModel.logs.collectAsStateWithLifecycle()
 
     var showPassword by remember { mutableStateOf(false) }
 
@@ -584,6 +588,92 @@ fun MainScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = mode.title, fontSize = 13.sp)
                         }
+                    }
+                }
+            }
+
+            // Real-time Debug Logs Card
+            val logScrollState = rememberScrollState()
+            LaunchedEffect(logs) {
+                if (logs.isNotBlank()) {
+                    logScrollState.animateScrollTo(logScrollState.maxValue)
+                }
+            }
+
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("실시간 디버그 로그", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    viewModel.clearLogs()
+                                    Toast.makeText(context, "로그가 초기화되었습니다.", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "로그 비우기",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Button(
+                                onClick = {
+                                    val fullLogs = viewModel.getFullLogs()
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("TapTranslatorLogs", fullLogs)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "전체 로그가 클립보드에 복사되었습니다!", Toast.LENGTH_SHORT).show()
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("로그 복사", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "버튼 클릭 시 캡처, OCR, API 요청 상태가 실시간으로 기록됩니다. 문제가 발생하면 '로그 복사'를 눌러 분석에 활용하세요.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 220.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF1E1E1E))
+                            .padding(10.dp)
+                            .verticalScroll(logScrollState)
+                    ) {
+                        Text(
+                            text = if (logs.isBlank()) "아직 기록된 로그가 없습니다.\n플로팅 버튼을 누르면 실시간 로그가 여기에 표시됩니다." else logs,
+                            color = if (logs.isBlank()) Color(0xFF888888) else Color(0xFF80CBC4),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
                     }
                 }
             }

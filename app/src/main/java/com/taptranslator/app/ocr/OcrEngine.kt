@@ -2,7 +2,6 @@ package com.taptranslator.app.ocr
 
 import android.graphics.Bitmap
 import android.graphics.Rect
-import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
@@ -12,9 +11,9 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.taptranslator.app.data.model.RecognizedBlock
 import com.taptranslator.app.data.model.ScriptType
+import com.taptranslator.app.util.AppLogger
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 class OcrEngine {
 
@@ -51,24 +50,30 @@ class OcrEngine {
         bitmap: Bitmap,
         preferredScript: ScriptType
     ): List<RecognizedBlock> {
+        AppLogger.i(TAG, "recognizeText called with preferredScript=$preferredScript, bitmap=${bitmap.width}x${bitmap.height}")
+
         // 1. Try preferred script first
         val primaryBlocks = tryRecognize(bitmap, preferredScript)
         if (primaryBlocks.isNotEmpty()) {
+            AppLogger.i(TAG, "Preferred script $preferredScript found ${primaryBlocks.size} blocks!")
             return primaryBlocks
         }
 
-        // 2. Fallback to other language recognizers so text is never missed
+        AppLogger.w(TAG, "Preferred script $preferredScript found 0 blocks. Attempting fallback scripts...")
+
+        // 2. Fallback to other language recognizers
         val fallbackScripts = listOf(ScriptType.KOREAN, ScriptType.LATIN, ScriptType.JAPANESE, ScriptType.CHINESE)
             .filter { it != preferredScript }
 
         for (script in fallbackScripts) {
             val fallbackBlocks = tryRecognize(bitmap, script)
             if (fallbackBlocks.isNotEmpty()) {
-                Log.d(TAG, "Fallback recognizer ($script) found ${fallbackBlocks.size} blocks")
+                AppLogger.i(TAG, "Fallback recognizer ($script) succeeded! Found ${fallbackBlocks.size} blocks")
                 return fallbackBlocks
             }
         }
 
+        AppLogger.w(TAG, "All recognizers returned 0 text blocks from bitmap.")
         return emptyList()
     }
 
@@ -99,14 +104,16 @@ class OcrEngine {
                             )
                         }
                     }
+                    val sample = blocks.take(3).joinToString("; ") { it.originalText }
+                    AppLogger.d(TAG, "Script $scriptType extracted ${blocks.size} blocks (samples: $sample)")
                     continuation.resume(blocks)
                 }
                 .addOnFailureListener { exception ->
-                    Log.w(TAG, "OCR attempt on $scriptType failed: ${exception.message}")
-                    continuation.resume(emptyList()) // Resume with empty to allow fallback
+                    AppLogger.e(TAG, "OCR failed for script $scriptType: ${exception.message}", exception)
+                    continuation.resume(emptyList())
                 }
         } catch (e: Exception) {
-            Log.w(TAG, "OCR exception on $scriptType: ${e.message}")
+            AppLogger.e(TAG, "OCR exception for script $scriptType: ${e.message}", e)
             continuation.resume(emptyList())
         }
     }
@@ -118,7 +125,7 @@ class OcrEngine {
             koreanRecognizer.close()
             chineseRecognizer.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error closing recognizers", e)
+            AppLogger.e(TAG, "Error closing recognizers", e)
         }
     }
 }
