@@ -52,16 +52,19 @@ enum class TranslationTone(val title: String, val instruction: String) {
 }
 
 enum class OverlayDisplayMode(val title: String) {
-    OVERLAY_BOXES("원문 위치에 번역 덮어쓰기 (오버레이)"),
+    NATURAL_INPLACE("자연스러운 원문 대체 (구글 렌즈 스타일)"),
+    OVERLAY_BOXES("플로팅 번역 박스 (어두운 카드 및 테두리)"),
     POPUP_CARD("하단 팝업 카드로 전체보기"),
-    BOTH("오버레이 + 하단 카드 모두 표시")
+    BOTH("원문 대체 + 하단 카드 모두 표시")
 }
 
 data class RecognizedBlock(
     val id: Int,
     val originalText: String,
     val rect: Rect,
-    var translatedText: String = ""
+    var translatedText: String = "",
+    val bgColor: Int = android.graphics.Color.WHITE,
+    val textColor: Int = android.graphics.Color.BLACK
 )
 
 @Serializable

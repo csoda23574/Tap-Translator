@@ -72,11 +72,11 @@ class PreferencesManager(context: Context) {
 
     var overlayDisplayMode: OverlayDisplayMode
         get() {
-            val name = prefs.getString(KEY_DISPLAY_MODE, OverlayDisplayMode.BOTH.name) ?: OverlayDisplayMode.BOTH.name
+            val name = prefs.getString(KEY_DISPLAY_MODE, OverlayDisplayMode.NATURAL_INPLACE.name) ?: OverlayDisplayMode.NATURAL_INPLACE.name
             return try {
                 OverlayDisplayMode.valueOf(name)
             } catch (e: Exception) {
-                OverlayDisplayMode.BOTH
+                OverlayDisplayMode.NATURAL_INPLACE
             }
         }
         set(value) = prefs.edit().putString(KEY_DISPLAY_MODE, value.name).apply()

@@ -32,6 +32,7 @@ import com.taptranslator.app.ui.overlay.ExitConfirmDialogView
 import com.taptranslator.app.ui.overlay.FloatingButtonView
 import com.taptranslator.app.ui.overlay.ResultOverlayView
 import com.taptranslator.app.util.AppLogger
+import com.taptranslator.app.util.ColorSampler
 import com.taptranslator.app.util.LanguageFilter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -269,6 +270,14 @@ class FloatingOverlayService : Service() {
                 }
                 AppLogger.i(TAG, "Language filter kept ${recognizedBlocks.size} target blocks (merged & cleaned from ${rawBlocks.size} raw blocks)")
 
+                // 2-2. Sample background & text colors from the captured bitmap for Google Lens style inpainting
+                val coloredBlocks = withContext(Dispatchers.Default) {
+                    recognizedBlocks.map { block ->
+                        val colors = ColorSampler.sampleBlockColors(bitmap, block.rect)
+                        block.copy(bgColor = colors.bgColor, textColor = colors.textColor)
+                    }
+                }
+
                 // 3. Gemini Translation
                 val apiKey = prefs.apiKey
                 if (apiKey.isBlank()) {
@@ -287,7 +296,7 @@ class FloatingOverlayService : Service() {
                 AppLogger.i(TAG, "Requesting Gemini translation: model=$model, $sourceLang -> $targetLang, tone=${tone.name}")
 
                 val translatedBlocks = geminiTranslator.translateBlocks(
-                    blocks = recognizedBlocks,
+                    blocks = coloredBlocks,
                     apiKey = apiKey,
                     model = model,
                     sourceLang = sourceLang,

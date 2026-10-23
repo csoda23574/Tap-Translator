@@ -9,15 +9,17 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -64,18 +66,23 @@ class ResultOverlayView(
             y = 0
         }
 
-        // Semi-transparent dim background (tap to dismiss)
-        setBackgroundColor(Color.argb((255 * 0.38f).toInt(), 0, 0, 0))
+        val isNaturalInplace = (displayMode == OverlayDisplayMode.NATURAL_INPLACE || displayMode == OverlayDisplayMode.BOTH)
 
-        if (displayMode == OverlayDisplayMode.OVERLAY_BOXES || displayMode == OverlayDisplayMode.BOTH) {
-            setupOverlayBoxes()
+        // In Google Lens natural in-place mode, use very subtle dimming (10%) so image/app stays true to life
+        val dimAlpha = if (isNaturalInplace) 0.10f else 0.38f
+        setBackgroundColor(Color.argb((255 * dimAlpha).toInt(), 0, 0, 0))
+
+        if (displayMode == OverlayDisplayMode.NATURAL_INPLACE ||
+            displayMode == OverlayDisplayMode.OVERLAY_BOXES ||
+            displayMode == OverlayDisplayMode.BOTH) {
+            setupOverlayBoxes(isNaturalInplace)
         }
 
         if (displayMode == OverlayDisplayMode.POPUP_CARD || displayMode == OverlayDisplayMode.BOTH) {
             setupBottomCard()
         }
 
-        // Tap outside to dismiss comparison card or entire overlay
+        // Tap outside to dismiss active comparison card or entire overlay
         setOnClickListener {
             if (activeComparisonCard != null) {
                 dismissComparisonCard()
@@ -85,11 +92,8 @@ class ResultOverlayView(
         }
     }
 
-    private fun setupOverlayBoxes() {
-        // Track placed box bounds to prevent overlapping
+    private fun setupOverlayBoxes(isNaturalInplace: Boolean) {
         val placedBoxes = mutableListOf<Rect>()
-
-        // Sort blocks top-to-bottom so stacking is predictable
         val sortedBlocks = blocks.sortedBy { it.rect.top }
 
         for (block in sortedBlocks) {
@@ -99,51 +103,108 @@ class ResultOverlayView(
             val r = block.rect
 
             // Calculate adaptive width based on original rect
-            val minWidth = (48 * density).toInt()
-            val maxWidth = (screenWidth - 24 * density).toInt()
-            val boxWidth = r.width().coerceIn(minWidth, maxWidth)
+            val minWidth = (36 * density).toInt()
+            val maxWidth = (screenWidth - 16 * density).toInt()
+            val boxWidth = if (isNaturalInplace) {
+                (r.width() + (8 * density).toInt()).coerceIn(minWidth, maxWidth)
+            } else {
+                r.width().coerceIn((48 * density).toInt(), (screenWidth - 24 * density).toInt())
+            }
 
             // Dynamic font size proportional to original height
             val approxLineHeightDp = (r.height() / density).coerceAtLeast(14f)
-            val fontSizeSp = (approxLineHeightDp * 0.68f).coerceIn(11f, 15f)
+            val fontSizeSp = (approxLineHeightDp * 0.70f).coerceIn(10.5f, 16f)
 
-            // Number badge if multiple blocks exist (e.g. ①, ②)
-            val badgePrefix = if (blocks.size > 1) "${getNumberBadge(block.id + 1)} " else ""
-            val displayText = "$badgePrefix$text"
+            val displayText = if (isNaturalInplace) {
+                // In Google Lens mode: clean text without number badges for seamless natural look
+                text
+            } else {
+                val badgePrefix = if (blocks.size > 1) "${getNumberBadge(block.id + 1)} " else ""
+                "$badgePrefix$text"
+            }
 
             val boxView = TextView(context).apply {
                 this.text = displayText
-                setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
                 typeface = Typeface.DEFAULT_BOLD
-                gravity = Gravity.CENTER_VERTICAL or Gravity.START
 
-                val padH = (6 * density).toInt()
-                val padV = (3 * density).toInt()
-                setPadding(padH, padV, padH, padV)
+                if (isNaturalInplace) {
+                    // Google Lens style: Inpainting background + detected text color, borderless, flat
+                    setTextColor(block.textColor)
+                    gravity = Gravity.CENTER
+                    val padH = (4 * density).toInt()
+                    val padV = (2 * density).toInt()
+                    setPadding(padH, padV, padH, padV)
 
-                // Background with rounded corners and distinct cyan border
-                background = createBoxBackground(Color.parseColor("#38BDF8"))
-                elevation = 6 * density
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 3 * density
+                        setColor(block.bgColor)
+                    }
+                    elevation = 0f
+                } else {
+                    // Classic floating card style: dark slate box with cyan border
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                    val padH = (6 * density).toInt()
+                    val padV = (3 * density).toInt()
+                    setPadding(padH, padV, padH, padV)
 
-                // Handle click: show 1:1 original vs translated comparison card
-                setOnClickListener {
-                    showComparisonCard(block, this)
+                    background = createBoxBackground(Color.parseColor("#38BDF8"))
+                    elevation = 6 * density
+                }
+
+                // Interactive touch: Press & hold = Peek original screen; Tap = Open comparison card
+                var downTime = 0L
+                var isPeeking = false
+                val touchHandler = Handler(Looper.getMainLooper())
+                val peekRunnable = Runnable {
+                    isPeeking = true
+                    alpha = 0f // Reveal original foreign text underneath
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                }
+
+                setOnTouchListener { _, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            downTime = System.currentTimeMillis()
+                            isPeeking = false
+                            touchHandler.postDelayed(peekRunnable, 300)
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            touchHandler.removeCallbacks(peekRunnable)
+                            if (isPeeking) {
+                                alpha = 1f
+                                isPeeking = false
+                            } else if (System.currentTimeMillis() - downTime < 300) {
+                                showComparisonCard(block, this, isNaturalInplace)
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            touchHandler.removeCallbacks(peekRunnable)
+                            alpha = 1f
+                            isPeeking = false
+                            true
+                        }
+                        else -> false
+                    }
                 }
             }
 
             var leftPos = r.left.coerceIn((8 * density).toInt(), screenWidth - boxWidth - (8 * density).toInt())
-            var topPos = r.top.coerceIn((24 * density).toInt(), screenHeight - (48 * density).toInt())
+            var topPos = r.top.coerceIn((20 * density).toInt(), screenHeight - (44 * density).toInt())
 
             // Anti-overlap collision detection: shift down if horizontally colliding with a placed box
             for (placed in placedBoxes) {
                 val horizOverlap = (min(leftPos + boxWidth, placed.right) - max(leftPos, placed.left)) > 0
-                if (horizOverlap && topPos < placed.bottom + (4 * density).toInt() && topPos >= placed.top - (16 * density).toInt()) {
-                    topPos = placed.bottom + (4 * density).toInt()
+                if (horizOverlap && topPos < placed.bottom + (3 * density).toInt() && topPos >= placed.top - (14 * density).toInt()) {
+                    topPos = placed.bottom + (3 * density).toInt()
                 }
             }
 
-            val estimatedHeight = (r.height().coerceAtLeast((28 * density).toInt()))
+            val estimatedHeight = (r.height().coerceAtLeast((24 * density).toInt()))
             placedBoxes.add(Rect(leftPos, topPos, leftPos + boxWidth, topPos + estimatedHeight))
 
             val boxParams = LayoutParams(boxWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -161,21 +222,31 @@ class ResultOverlayView(
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 7 * density
             val alphaInt = (255 * bgAlpha).toInt()
-            setColor(Color.argb(alphaInt, 15, 23, 42)) // Slate 900
+            setColor(Color.argb(alphaInt, 15, 23, 42))
             setStroke((1.5f * density).toInt(), borderColor)
         }
     }
 
     /**
-     * Shows a polished 1:1 comparison popup card when an overlay box is tapped.
+     * Shows a polished 1:1 comparison popup card when a translated text is tapped.
      * Clearly presents original text vs translation, with copy actions and peek mode.
      */
-    private fun showComparisonCard(block: RecognizedBlock, targetBoxView: TextView) {
+    private fun showComparisonCard(block: RecognizedBlock, targetBoxView: TextView, isNaturalInplace: Boolean) {
         dismissComparisonCard()
 
-        // Highlight target box with amber gold border
         highlightedBoxView = targetBoxView
-        targetBoxView.background = createBoxBackground(Color.parseColor("#F59E0B"))
+
+        // Highlight active target box with accent border
+        if (isNaturalInplace) {
+            targetBoxView.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 3 * density
+                setColor(block.bgColor)
+                setStroke((2 * density).toInt(), Color.parseColor("#38BDF8"))
+            }
+        } else {
+            targetBoxView.background = createBoxBackground(Color.parseColor("#F59E0B"))
+        }
 
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -192,7 +263,7 @@ class ResultOverlayView(
             setOnClickListener { /* Consume clicks inside */ }
         }
 
-        // Header: Badge + Title + Close
+        // Header: Title + Close
         val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -313,7 +384,7 @@ class ResultOverlayView(
         }
         btnRow.addView(copyBtn)
 
-        // Peek Original button (holding hides the overlay box to reveal original screen)
+        // Peek Original button
         val peekBtn = TextView(context).apply {
             text = "👁️ 원문 엿보기 (누르고 있기)"
             setTextColor(Color.parseColor("#38BDF8"))
@@ -368,8 +439,18 @@ class ResultOverlayView(
             removeView(it)
             activeComparisonCard = null
         }
-        highlightedBoxView?.let {
-            it.background = createBoxBackground(Color.parseColor("#38BDF8"))
+        highlightedBoxView?.let { boxView ->
+            val isNaturalInplace = (displayMode == OverlayDisplayMode.NATURAL_INPLACE || displayMode == OverlayDisplayMode.BOTH)
+            if (isNaturalInplace) {
+                val block = blocks.firstOrNull { it.translatedText == boxView.text || it.originalText == boxView.text }
+                boxView.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 3 * density
+                    setColor(block?.bgColor ?: Color.WHITE)
+                }
+            } else {
+                boxView.background = createBoxBackground(Color.parseColor("#38BDF8"))
+            }
             highlightedBoxView = null
         }
     }
