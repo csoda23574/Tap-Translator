@@ -259,8 +259,17 @@ class FloatingOverlayService : Service() {
                 }
                 AppLogger.i(TAG, "Raw OCR extracted ${rawBlocks.size} blocks")
 
-                // 2-1. Filter strictly by selected source language and merge multi-line paragraphs
-                val recognizedBlocks = LanguageFilter.filterAndMergeBlocks(rawBlocks, sourceLang)
+                // 2-1. Filter strictly by system UI, selected source language, and noise
+                val targetLang = prefs.targetLanguage
+                val recognizedBlocks = LanguageFilter.filterBlocks(
+                    blocks = rawBlocks,
+                    sourceLang = sourceLang,
+                    targetLang = targetLang,
+                    screenWidth = bitmap.width,
+                    screenHeight = bitmap.height,
+                    statusBarHeight = getStatusBarHeight(),
+                    navBarHeight = getNavigationBarHeight()
+                )
 
                 if (recognizedBlocks.isEmpty()) {
                     AppLogger.w(TAG, "No blocks matched selected source language ($sourceLang) out of ${rawBlocks.size} OCR blocks")
@@ -268,7 +277,7 @@ class FloatingOverlayService : Service() {
                     Toast.makeText(this@FloatingOverlayService, "화면에서 $langName 텍스트를 찾지 못했습니다.", Toast.LENGTH_SHORT).show()
                     return@launch
                 }
-                AppLogger.i(TAG, "Language filter kept ${recognizedBlocks.size} target blocks (merged & cleaned from ${rawBlocks.size} raw blocks)")
+                AppLogger.i(TAG, "Language filter kept ${recognizedBlocks.size} target blocks (filtered from ${rawBlocks.size} raw blocks)")
 
                 // 2-2. Sample background & text colors from the captured bitmap for Google Lens style inpainting
                 val coloredBlocks = withContext(Dispatchers.Default) {
@@ -290,7 +299,6 @@ class FloatingOverlayService : Service() {
                     return@launch
                 }
 
-                val targetLang = prefs.targetLanguage
                 val tone = prefs.translationTone
                 val model = prefs.selectedModel
                 AppLogger.i(TAG, "Requesting Gemini translation: model=$model, $sourceLang -> $targetLang, tone=${tone.name}")
@@ -444,6 +452,16 @@ class FloatingOverlayService : Service() {
             stopForeground(true)
         }
         stopSelf()
+    }
+
+    private fun getStatusBarHeight(): Int {
+        val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (resourceId > 0) resources.getDimensionPixelSize(resourceId) else (28 * resources.displayMetrics.density).toInt()
+    }
+
+    private fun getNavigationBarHeight(): Int {
+        val resourceId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        return if (resourceId > 0) resources.getDimensionPixelSize(resourceId) else (48 * resources.displayMetrics.density).toInt()
     }
 
     override fun onDestroy() {

@@ -2,9 +2,6 @@ package com.taptranslator.app.util
 
 import android.graphics.Rect
 import com.taptranslator.app.data.model.RecognizedBlock
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
 
 object LanguageFilter {
 
@@ -26,17 +23,33 @@ object LanguageFilter {
     fun isNoiseText(text: String): Boolean {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return true
-        if (trimmed.length <= 1 && !trimmed.first().isLetter()) return true
         if (NOISE_ONLY_REGEX.matches(trimmed)) return true
+
+        val letterCount = trimmed.count { it.isLetter() || HAN_REGEX.matches(it.toString()) }
+        if (letterCount == 0) return true
+
+        // Filter out single punctuation/symbol characters
+        if (trimmed.length <= 1 && !HAN_REGEX.matches(trimmed) && !KOREAN_REGEX.matches(trimmed) && !JAPANESE_ALL.matches(trimmed)) {
+            return true
+        }
         return false
     }
 
     /**
      * Checks if a block of text contains valid characters for the selected source language.
-     * Prevents translating unrelated languages (e.g. English subtitles/descriptions when Chinese is selected).
+     * Prevents translating unrelated languages or already-target language content.
      */
-    fun matchesLanguage(text: String, sourceLang: String): Boolean {
+    fun matchesLanguage(text: String, sourceLang: String, targetLang: String = "ko"): Boolean {
         if (isNoiseText(text)) return false
+
+        // If target is Korean and text is already Korean without foreign script, skip it!
+        if (targetLang == "ko") {
+            val hasKorean = KOREAN_REGEX.containsMatchIn(text)
+            val hasForeign = HAN_REGEX.containsMatchIn(text) || JAPANESE_HIRAGANA_KATAKANA.containsMatchIn(text)
+            if (hasKorean && !hasForeign) {
+                return false
+            }
+        }
 
         return when (sourceLang) {
             "zh" -> {
@@ -60,83 +73,57 @@ object LanguageFilter {
                 hasLatin && !hasAsian
             }
             "auto" -> {
-                // Auto mode: accepts any text as long as it's not pure noise
+                // Auto mode: accepts any text as long as it's not noise and not already target language
                 true
             }
-            else -> {
-                // Default: if unrecognized code, allow if not pure noise
-                true
-            }
+            else -> true
         }
     }
 
     /**
-     * Filters blocks by selected source language and intelligently merges vertically adjacent lines
-     * of the same paragraph or multi-line title/dialogue to avoid fragmented translations and overlapping boxes.
+     * Filters blocks by system UI boundaries, noise, and selected source language.
+     * Keeps each line strictly in-place at its original bounding box for pixel-perfect Google Lens replacement.
      */
-    fun filterAndMergeBlocks(blocks: List<RecognizedBlock>, sourceLang: String): List<RecognizedBlock> {
-        // 1. Language & noise filtering
+    fun filterBlocks(
+        blocks: List<RecognizedBlock>,
+        sourceLang: String,
+        targetLang: String = "ko",
+        screenWidth: Int = 1080,
+        screenHeight: Int = 2400,
+        statusBarHeight: Int = 80,
+        navBarHeight: Int = 100
+    ): List<RecognizedBlock> {
         val filtered = blocks.filter { block ->
-            val match = matchesLanguage(block.originalText, sourceLang)
+            val r = block.rect
+            // 1. Exclude status bar region (clock, battery, telecom indicators)
+            if (statusBarHeight > 0 && r.bottom <= statusBarHeight + 8) {
+                AppLogger.d(TAG, "Filtered out status bar block: \"${block.originalText}\" [rect=$r]")
+                return@filter false
+            }
+            // 2. Exclude navigation bar region (home/back gestures)
+            if (navBarHeight > 0 && r.top >= screenHeight - navBarHeight - 8) {
+                AppLogger.d(TAG, "Filtered out navigation bar block: \"${block.originalText}\" [rect=$r]")
+                return@filter false
+            }
+            // 3. Language & noise matching
+            val match = matchesLanguage(block.originalText, sourceLang, targetLang)
             if (!match) {
-                AppLogger.d(TAG, "Filtered out non-matching block: \"${block.originalText.take(40)}\" (sourceLang=$sourceLang)")
+                AppLogger.d(TAG, "Filtered out non-matching block: \"${block.originalText.take(40)}\" (sourceLang=$sourceLang, targetLang=$targetLang)")
             }
             match
         }
 
-        AppLogger.i(TAG, "Language filter ($sourceLang): ${blocks.size} input blocks -> ${filtered.size} matching blocks")
+        AppLogger.i(TAG, "Language filter ($sourceLang -> $targetLang): ${blocks.size} input blocks -> ${filtered.size} matching blocks")
 
-        if (filtered.size <= 1) return filtered
-
-        // 2. Sort from top to bottom, then left to right
+        // Sort from top to bottom, then left to right, and reassign sequential IDs
         val sorted = filtered.sortedWith(compareBy({ it.rect.top }, { it.rect.left }))
-
-        // 3. Merge vertically adjacent lines that belong to the same block/title
-        val merged = mutableListOf<RecognizedBlock>()
-        var current = sorted[0]
-
-        for (i in 1 until sorted.size) {
-            val next = sorted[i]
-            if (shouldMerge(current, next)) {
-                AppLogger.d(TAG, "Merging adjacent lines: \"${current.originalText.take(20)}\" + \"${next.originalText.take(20)}\"")
-                val mergedText = "${current.originalText} ${next.originalText}".trim()
-                val mergedRect = Rect(
-                    min(current.rect.left, next.rect.left),
-                    min(current.rect.top, next.rect.top),
-                    max(current.rect.right, next.rect.right),
-                    max(current.rect.bottom, next.rect.bottom)
-                )
-                current = current.copy(originalText = mergedText, rect = mergedRect)
-            } else {
-                merged.add(current)
-                current = next
-            }
-        }
-        merged.add(current)
-
-        return merged.mapIndexed { index, block ->
+        return sorted.mapIndexed { index, block ->
             block.copy(id = index)
         }
     }
 
-    private fun shouldMerge(b1: RecognizedBlock, b2: RecognizedBlock): Boolean {
-        val r1 = b1.rect
-        val r2 = b2.rect
-
-        // Vertical distance from bottom of b1 to top of b2
-        val verticalGap = r2.top - r1.bottom
-        val avgHeight = (r1.height() + r2.height()) / 2.0
-
-        // Must be directly below with a reasonable line gap
-        if (verticalGap < -(r1.height() * 0.4) || verticalGap > avgHeight * 1.3) {
-            return false
-        }
-
-        // Horizontal alignment check: overlapping horizontally or left-aligned
-        val horizontalOverlap = min(r1.right, r2.right) - max(r1.left, r2.left)
-        val minWidth = min(r1.width(), r2.width())
-        val isHorizontallyAligned = horizontalOverlap > minWidth * 0.35 || abs(r1.left - r2.left) < 80
-
-        return isHorizontallyAligned
+    // Retain legacy method for backward compatibility if referenced elsewhere
+    fun filterAndMergeBlocks(blocks: List<RecognizedBlock>, sourceLang: String): List<RecognizedBlock> {
+        return filterBlocks(blocks, sourceLang)
     }
 }

@@ -3,6 +3,7 @@ package com.taptranslator.app.ocr
 import android.graphics.Bitmap
 import android.graphics.Rect
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
@@ -91,17 +92,66 @@ class OcrEngine {
                     var idCounter = 0
 
                     for (block in visionText.textBlocks) {
-                        val rawText = block.text.trim()
-                        val boundingBox = block.boundingBox ?: Rect(0, 0, 0, 0)
+                        for (line in block.lines) {
+                            val lineElements = line.elements.filter { it.boundingBox != null && it.text.isNotBlank() }
+                            if (lineElements.size > 1) {
+                                // Check if large horizontal gaps separate elements into distinct columns/tabs (e.g. [推荐] [「凌」感] [包邮])
+                                val clusters = mutableListOf<MutableList<Text.Element>>()
+                                var currentCluster = mutableListOf<Text.Element>()
 
-                        if (rawText.isNotEmpty() && boundingBox.width() > 10 && boundingBox.height() > 10) {
-                            blocks.add(
-                                RecognizedBlock(
-                                    id = idCounter++,
-                                    originalText = rawText,
-                                    rect = boundingBox
-                                )
-                            )
+                                for (elem in lineElements) {
+                                    val elemBox = elem.boundingBox!!
+                                    if (currentCluster.isEmpty()) {
+                                        currentCluster.add(elem)
+                                    } else {
+                                        val prevElem = currentCluster.last()
+                                        val prevBox = prevElem.boundingBox!!
+                                        val gap = elemBox.left - prevBox.right
+                                        val avgH = (prevBox.height() + elemBox.height()) / 2f
+                                        // Gap > 1.1x line height or > 32px indicates separate UI tabs/buttons
+                                        if (gap > (avgH * 1.1f).coerceAtLeast(32f)) {
+                                            clusters.add(currentCluster)
+                                            currentCluster = mutableListOf(elem)
+                                        } else {
+                                            currentCluster.add(elem)
+                                        }
+                                    }
+                                }
+                                if (currentCluster.isNotEmpty()) {
+                                    clusters.add(currentCluster)
+                                }
+
+                                for (cluster in clusters) {
+                                    val text = cluster.joinToString(" ") { it.text.trim() }.trim()
+                                    if (text.isEmpty()) continue
+                                    val left = cluster.minOf { it.boundingBox!!.left }
+                                    val top = cluster.minOf { it.boundingBox!!.top }
+                                    val right = cluster.maxOf { it.boundingBox!!.right }
+                                    val bottom = cluster.maxOf { it.boundingBox!!.bottom }
+                                    val box = Rect(left, top, right, bottom)
+                                    if (box.width() > 8 && box.height() > 8) {
+                                        blocks.add(
+                                            RecognizedBlock(
+                                                id = idCounter++,
+                                                originalText = text,
+                                                rect = box
+                                            )
+                                        )
+                                    }
+                                }
+                            } else {
+                                val rawText = line.text.trim()
+                                val boundingBox = line.boundingBox ?: Rect(0, 0, 0, 0)
+                                if (rawText.isNotEmpty() && boundingBox.width() > 8 && boundingBox.height() > 8) {
+                                    blocks.add(
+                                        RecognizedBlock(
+                                            id = idCounter++,
+                                            originalText = rawText,
+                                            rect = boundingBox
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                     val sample = blocks.take(3).joinToString("; ") { it.originalText }

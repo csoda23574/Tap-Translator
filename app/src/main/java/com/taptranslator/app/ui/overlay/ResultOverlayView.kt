@@ -11,6 +11,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -24,6 +25,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.TextViewCompat
 import com.taptranslator.app.data.model.OverlayDisplayMode
 import com.taptranslator.app.data.model.RecognizedBlock
 import kotlin.math.max
@@ -68,8 +70,8 @@ class ResultOverlayView(
 
         val isNaturalInplace = (displayMode == OverlayDisplayMode.NATURAL_INPLACE || displayMode == OverlayDisplayMode.BOTH)
 
-        // In Google Lens natural in-place mode, use very subtle dimming (10%) so image/app stays true to life
-        val dimAlpha = if (isNaturalInplace) 0.10f else 0.38f
+        // In Google Lens natural in-place mode, background is 100% transparent so screen/app is crystal clear
+        val dimAlpha = if (isNaturalInplace) 0.0f else 0.38f
         setBackgroundColor(Color.argb((255 * dimAlpha).toInt(), 0, 0, 0))
 
         if (displayMode == OverlayDisplayMode.NATURAL_INPLACE ||
@@ -97,53 +99,88 @@ class ResultOverlayView(
         val sortedBlocks = blocks.sortedBy { it.rect.top }
 
         for (block in sortedBlocks) {
-            val text = block.translatedText.ifBlank { block.originalText }
+            val text = block.translatedText.ifBlank { block.originalText }.trim()
             if (text.isBlank()) continue
 
             val r = block.rect
+            if (r.width() <= 0 || r.height() <= 0) continue
 
-            // Calculate adaptive width based on original rect
-            val minWidth = (36 * density).toInt()
-            val maxWidth = (screenWidth - 16 * density).toInt()
-            val boxWidth = if (isNaturalInplace) {
-                (r.width() + (8 * density).toInt()).coerceIn(minWidth, maxWidth)
-            } else {
-                r.width().coerceIn((48 * density).toInt(), (screenWidth - 24 * density).toInt())
-            }
+            if (isNaturalInplace) {
+                // === GOOGLE LENS NATURAL IN-PLACE REPLACEMENT ===
+                // Strictly in-place placement: no downward cascade shift!
+                val padH = (3 * density).toInt()
+                val padV = (1 * density).toInt()
 
-            // Dynamic font size proportional to original height
-            val approxLineHeightDp = (r.height() / density).coerceAtLeast(14f)
-            val fontSizeSp = (approxLineHeightDp * 0.70f).coerceIn(10.5f, 16f)
+                val isSingleLine = !text.contains('\n') && r.height() < (38 * density).toInt()
+                val extraW = if (isSingleLine && text.length > block.originalText.length) (8 * density).toInt() else 0
+                val boxWidth = (r.width() + padH * 2 + extraW).coerceIn((20 * density).toInt(), screenWidth - (6 * density).toInt())
+                val boxHeight = (r.height() + padV * 2).coerceAtLeast((14 * density).toInt())
 
-            val displayText = if (isNaturalInplace) {
-                // In Google Lens mode: clean text without number badges for seamless natural look
-                text
-            } else {
-                val badgePrefix = if (blocks.size > 1) "${getNumberBadge(block.id + 1)} " else ""
-                "$badgePrefix$text"
-            }
+                var leftPos = r.left - padH - (extraW / 2)
+                leftPos = leftPos.coerceIn((2 * density).toInt(), screenWidth - boxWidth - (2 * density).toInt())
 
-            val boxView = TextView(context).apply {
-                this.text = displayText
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
-                typeface = Typeface.DEFAULT_BOLD
+                var topPos = r.top - padV
+                topPos = topPos.coerceIn((2 * density).toInt(), screenHeight - boxHeight - (2 * density).toInt())
 
-                if (isNaturalInplace) {
-                    // Google Lens style: Inpainting background + detected text color, borderless, flat
+                val boxView = TextView(context).apply {
+                    this.text = text
+                    typeface = Typeface.DEFAULT_BOLD
                     setTextColor(block.textColor)
                     gravity = Gravity.CENTER
-                    val padH = (4 * density).toInt()
-                    val padV = (2 * density).toInt()
                     setPadding(padH, padV, padH, padV)
 
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
-                        cornerRadius = 3 * density
+                        cornerRadius = 2.5f * density
                         setColor(block.bgColor)
                     }
                     elevation = 0f
-                } else {
-                    // Classic floating card style: dark slate box with cyan border
+
+                    if (isSingleLine) {
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    } else {
+                        maxLines = 4
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+
+                    // Auto-size text down to fit snugly within the line box without vertical tower explosion
+                    val approxSp = (r.height() / density * 0.72f).coerceIn(8f, 16f).toInt()
+                    TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                        this,
+                        7,
+                        approxSp.coerceAtLeast(10),
+                        1,
+                        TypedValue.COMPLEX_UNIT_SP
+                    )
+
+                    setupTouchListener(this, block, true)
+                }
+
+                val boxParams = LayoutParams(boxWidth, boxHeight).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    this.leftMargin = leftPos
+                    this.topMargin = topPos
+                }
+
+                addView(boxView, boxParams)
+
+            } else {
+                // === CLASSIC FLOATING CARD MODE (with badge & collision avoidance) ===
+                val minWidth = (48 * density).toInt()
+                val maxWidth = (screenWidth - 24 * density).toInt()
+                val boxWidth = r.width().coerceIn(minWidth, maxWidth)
+
+                val approxLineHeightDp = (r.height() / density).coerceAtLeast(14f)
+                val fontSizeSp = (approxLineHeightDp * 0.70f).coerceIn(10.5f, 16f)
+
+                val badgePrefix = if (blocks.size > 1) "${getNumberBadge(block.id + 1)} " else ""
+                val displayText = "$badgePrefix$text"
+
+                val boxView = TextView(context).apply {
+                    this.text = displayText
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, fontSizeSp)
+                    typeface = Typeface.DEFAULT_BOLD
                     setTextColor(Color.WHITE)
                     gravity = Gravity.CENTER_VERTICAL or Gravity.START
                     val padH = (6 * density).toInt()
@@ -152,68 +189,71 @@ class ResultOverlayView(
 
                     background = createBoxBackground(Color.parseColor("#38BDF8"))
                     elevation = 6 * density
+
+                    setupTouchListener(this, block, false)
                 }
 
-                // Interactive touch: Press & hold = Peek original screen; Tap = Open comparison card
-                var downTime = 0L
-                var isPeeking = false
-                val touchHandler = Handler(Looper.getMainLooper())
-                val peekRunnable = Runnable {
-                    isPeeking = true
-                    alpha = 0f // Reveal original foreign text underneath
-                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                }
+                var leftPos = r.left.coerceIn((8 * density).toInt(), screenWidth - boxWidth - (8 * density).toInt())
+                var topPos = r.top.coerceIn((20 * density).toInt(), screenHeight - (44 * density).toInt())
 
-                setOnTouchListener { _, event ->
-                    when (event.action) {
-                        MotionEvent.ACTION_DOWN -> {
-                            downTime = System.currentTimeMillis()
-                            isPeeking = false
-                            touchHandler.postDelayed(peekRunnable, 300)
-                            true
-                        }
-                        MotionEvent.ACTION_UP -> {
-                            touchHandler.removeCallbacks(peekRunnable)
-                            if (isPeeking) {
-                                alpha = 1f
-                                isPeeking = false
-                            } else if (System.currentTimeMillis() - downTime < 300) {
-                                showComparisonCard(block, this, isNaturalInplace)
-                            }
-                            true
-                        }
-                        MotionEvent.ACTION_CANCEL -> {
-                            touchHandler.removeCallbacks(peekRunnable)
-                            alpha = 1f
-                            isPeeking = false
-                            true
-                        }
-                        else -> false
+                // Shift down only in classic floating box mode
+                for (placed in placedBoxes) {
+                    val horizOverlap = (min(leftPos + boxWidth, placed.right) - max(leftPos, placed.left)) > 0
+                    if (horizOverlap && topPos < placed.bottom + (3 * density).toInt() && topPos >= placed.top - (14 * density).toInt()) {
+                        topPos = placed.bottom + (3 * density).toInt()
                     }
                 }
-            }
 
-            var leftPos = r.left.coerceIn((8 * density).toInt(), screenWidth - boxWidth - (8 * density).toInt())
-            var topPos = r.top.coerceIn((20 * density).toInt(), screenHeight - (44 * density).toInt())
+                val estimatedHeight = r.height().coerceAtLeast((24 * density).toInt())
+                placedBoxes.add(Rect(leftPos, topPos, leftPos + boxWidth, topPos + estimatedHeight))
 
-            // Anti-overlap collision detection: shift down if horizontally colliding with a placed box
-            for (placed in placedBoxes) {
-                val horizOverlap = (min(leftPos + boxWidth, placed.right) - max(leftPos, placed.left)) > 0
-                if (horizOverlap && topPos < placed.bottom + (3 * density).toInt() && topPos >= placed.top - (14 * density).toInt()) {
-                    topPos = placed.bottom + (3 * density).toInt()
+                val boxParams = LayoutParams(boxWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    this.leftMargin = leftPos
+                    this.topMargin = topPos
                 }
+
+                addView(boxView, boxParams)
             }
+        }
+    }
 
-            val estimatedHeight = (r.height().coerceAtLeast((24 * density).toInt()))
-            placedBoxes.add(Rect(leftPos, topPos, leftPos + boxWidth, topPos + estimatedHeight))
+    private fun setupTouchListener(boxView: TextView, block: RecognizedBlock, isNaturalInplace: Boolean) {
+        var downTime = 0L
+        var isPeeking = false
+        val touchHandler = Handler(Looper.getMainLooper())
+        val peekRunnable = Runnable {
+            isPeeking = true
+            boxView.alpha = 0f // Reveal original foreign text underneath
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
 
-            val boxParams = LayoutParams(boxWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.TOP or Gravity.START
-                this.leftMargin = leftPos
-                this.topMargin = topPos
+        boxView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    downTime = System.currentTimeMillis()
+                    isPeeking = false
+                    touchHandler.postDelayed(peekRunnable, 300)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    touchHandler.removeCallbacks(peekRunnable)
+                    if (isPeeking) {
+                        boxView.alpha = 1f
+                        isPeeking = false
+                    } else if (System.currentTimeMillis() - downTime < 300) {
+                        showComparisonCard(block, boxView, isNaturalInplace)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    touchHandler.removeCallbacks(peekRunnable)
+                    boxView.alpha = 1f
+                    isPeeking = false
+                    true
+                }
+                else -> false
             }
-
-            addView(boxView, boxParams)
         }
     }
 
@@ -445,7 +485,7 @@ class ResultOverlayView(
                 val block = blocks.firstOrNull { it.translatedText == boxView.text || it.originalText == boxView.text }
                 boxView.background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = 3 * density
+                    cornerRadius = 2.5f * density
                     setColor(block?.bgColor ?: Color.WHITE)
                 }
             } else {
